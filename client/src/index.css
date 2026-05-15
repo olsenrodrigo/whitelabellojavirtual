@@ -1,0 +1,97 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  /*
+   * ========================================
+   * WHITELABEL COLOR PALETTE
+   * Altere estas cores para personalizar o site
+   * ========================================
+   */
+
+  /* Primary: Cor principal de destaque */
+  --color-primary: #5B8C9B;
+  --color-primary-foreground: #FFFFFF;
+
+  /* Secondary: Cor de contraste/escura */
+  --color-secondary: #2C3E50;
+  --color-secondary-foreground: #FFFFFF;
+
+  /* Muted: Fundo alternado das secoes */
+  --color-muted: #EDF2F4;
+  --color-muted-foreground: #3C3C3C;
+
+  /* Accent: Footer e overlays */
+  --color-accent: #4C4C4C;
+  --color-accent-foreground: #FFFFFF;
+
+  /* Neutrals & Text */
+  --color-background: #FFFFFF;
+  --color-foreground: #212529;
+
+  --color-card: #FFFFFF;
+  --color-card-foreground: #3C3C3C;
+
+  --color-popover: #FFFFFF;
+  --color-popover-foreground: #212529;
+
+  /* Borders */
+  --color-border: #EFEFEF;
+  --color-input: #EFEFEF;
+  --color-ring: #5B8C9B;
+
+  /* Semantic */
+  --color-destructive: 0 84% 60%;
+  --color-destructive-foreground: 0 0% 100%;
+
+  /* Typography */
+  --font-sans: 'Montserrat', sans-serif;
+  --font-heading: 'Montserrat', sans-serif;
+  --font-body: 'Montserrat', sans-serif;
+
+  /* Spacing & Radius */
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-sans font-bold;
+  }
+  p {
+    @apply font-sans leading-relaxed text-[#3C3C3C];
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .glass-nav {
+    @apply bg-white/90 backdrop-blur-md border-b border-white/20 shadow-sm supports-[backdrop-filter]:bg-white/80;
+  }
+  .section-padding {
+    @apply py-16 md:py-24;
+  }
+  .container-custom {
+    @apply container mx-auto px-4 md:px-6 max-w-7xl;
+  }
+  .bg-alt {
+    background-color: #EDF2F4;
+  }
+  .bg-neutral-gray {
+    background-color: #EFEFEF;
+  }
+}
