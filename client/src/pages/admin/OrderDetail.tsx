@@ -29,6 +29,8 @@ export default function AdminOrderDetail() {
   const [newStatus, setNewStatus] = useState("");
   const [statusNote, setStatusNote] = useState("");
   const [tracking, setTracking] = useState({ carrier: "", service: "", trackingCode: "" });
+  const [labelLoading, setLabelLoading] = useState(false);
+  const [labelUrl, setLabelUrl] = useState<string | null>(null);
   const { toast } = useToast();
 
   const load = async () => {
@@ -54,6 +56,25 @@ export default function AdminOrderDetail() {
       method: "PUT", body: JSON.stringify(tracking),
     });
     if (r.ok) { toast({ title: "Rastreio salvo! E-mail enviado ao cliente." }); load(); }
+  };
+
+  const generateLabel = async () => {
+    setLabelLoading(true);
+    try {
+      const r = await adminFetch(`/api/admin/orders/${id}/label`, {
+        method: "POST", body: JSON.stringify({}),
+      });
+      const d = await r.json();
+      if (r.ok && d.label?.url) {
+        setLabelUrl(d.label.url);
+        toast({ title: "Etiqueta gerada!" });
+        load();
+      } else {
+        toast({ title: "Falha ao gerar etiqueta", description: d.error, variant: "destructive" });
+      }
+    } finally {
+      setLabelLoading(false);
+    }
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-200 border-t-gray-900" /></div>;
@@ -135,6 +156,22 @@ export default function AdminOrderDetail() {
               <Input value={tracking.trackingCode} onChange={e => setTracking(t => ({...t, trackingCode: e.target.value}))} placeholder="AA123456789BR" className="mt-1 font-mono" />
             </div>
             <Button onClick={updateTracking} variant="outline" className="gap-2"><Truck size={14} /> Salvar rastreio e notificar cliente</Button>
+
+            <div className="mt-4 border-t pt-4">
+              <Button onClick={generateLabel} disabled={labelLoading} className="gap-2">
+                <Truck size={14} /> {labelLoading ? "Gerando etiqueta..." : "Gerar etiqueta SmartEnvios"}
+              </Button>
+              {labelUrl && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <a href={labelUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800">
+                    <Truck size={14} /> Imprimir etiqueta
+                  </a>
+                  <a href={labelUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                    Baixar PDF
+                  </a>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Timeline */}

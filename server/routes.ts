@@ -13,6 +13,7 @@ import { sendContactEmail } from "./email";
 import { hashPassword, comparePassword, signToken, requireAdmin, requireRole, checkRateLimit, recordFailedAttempt, resetAttempts, storeOtp, verifyOtp, signOtpToken, verifyOtpToken } from "./auth";
 import { createPayment, getPaymentStatus, generateOrderNumber } from "./payment";
 import { sendOrderConfirmationEmail, sendShippingEmail } from "./notify";
+import { registerShippingRoutes, createLabelForOrder } from "./smartenvios-integration";
 
 // ─── Multer config ───────────────────────────────────────────────────────────
 const uploadsDir = path.join(process.cwd(), "uploads");
@@ -338,6 +339,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
+  // Rotas de frete/etiqueta (SmartEnvios)
+  registerShippingRoutes(app);
+
   // Payment webhook (MercadoPago)
   app.post("/api/webhooks/mercadopago", async (req, res) => {
     const { action, data: wData } = req.body;
@@ -352,6 +356,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           if (order && order.paymentStatus !== "approved") {
             await storage.updateOrderStatus(tx.orderId, "confirmed", "Pagamento confirmado via webhook");
             await storage.updateOrderPayment(tx.orderId, "approved", String(wData.id));
+            // Gera a etiqueta automaticamente (não bloqueia o webhook em caso de erro).
+            if (process.env.SMARTENVIOS_AUTO_LABEL === "1" && !order.trackingCode) {
+              createLabelForOrder(tx.orderId).catch((e) =>
+                console.error("[smartenvios] falha ao gerar etiqueta no webhook:", e?.message)
+              );
+            }
           }
         }
       }
