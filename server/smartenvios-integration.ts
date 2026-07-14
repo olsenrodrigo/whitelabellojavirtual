@@ -11,9 +11,39 @@ import {
   generateLabel,
   type SmartEnviosConfig,
   type OrderItem,
+  type Volume,
 } from "./smartenvios";
 
 const cfg = (): SmartEnviosConfig => loadConfig(process.env);
+
+// Monta os volumes para cotação a partir dos itens do carrinho (usa dims do produto).
+async function buildVolumes(items: any[]): Promise<Volume[]> {
+  return Promise.all(
+    items.map(async (it) => {
+      let weightG = 300;
+      let height = 12;
+      let width = 8;
+      let length = 8;
+      if (it.productId) {
+        const p = await storage.getProductById(Number(it.productId));
+        if (p) {
+          weightG = p.weightG || weightG;
+          height = Number(p.heightCm) || height;
+          width = Number(p.widthCm) || width;
+          length = Number(p.depthCm) || length;
+        }
+      }
+      return {
+        weight: weightG / 1000,
+        height,
+        width,
+        length,
+        quantity: Number(it.quantity) || 1,
+        price: Number(it.unitPrice) || undefined,
+      };
+    })
+  );
+}
 
 // Monta os itens do pedido SmartEnvios usando peso/dimensões do produto quando houver.
 async function buildItems(items: any[]): Promise<OrderItem[]> {
@@ -99,14 +129,17 @@ export function registerShippingRoutes(app: Express) {
   app.post("/api/shipping/quote", async (req, res) => {
     try {
       const c = cfg();
-      const { zipTo, subtotal = 0, volumes = [], document } = req.body || {};
+      const { zipTo, subtotal = 0, volumes, items, document } = req.body || {};
       if (String(zipTo || "").replace(/\D/g, "").length !== 8) {
         return res.status(400).json({ error: "CEP de destino inválido" });
       }
+      let vols: Volume[] = Array.isArray(volumes) ? volumes : [];
+      if (!vols.length && Array.isArray(items)) vols = await buildVolumes(items);
+      if (!vols.length) return res.status(400).json({ error: "Sem itens para cotar" });
       const services = await quoteFreight(c, {
         zipFrom: c.sender.zipcode,
         zipTo,
-        volumes,
+        volumes: vols,
         totalPrice: Number(subtotal),
         document,
       });

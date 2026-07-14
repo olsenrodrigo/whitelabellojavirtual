@@ -30,6 +30,8 @@ export default function CheckoutPage() {
   const [address, setAddress] = useState<Address>({ recipient: "", cep: "", logradouro: "", numero: "", complemento: "", bairro: "", cidade: "", estado: "SP" });
   const [loadingCep, setLoadingCep] = useState(false);
   const [shipping, setShipping] = useState({ carrier: "Correios", service: "PAC", amount: 0 });
+  const [shipOptions, setShipOptions] = useState<any[] | null>(null);
+  const [shipLoading, setShipLoading] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<"pix" | "boleto" | "credit_card">("pix");
   const [couponCode, setCouponCode] = useState("");
   const [couponDiscount, setCouponDiscount] = useState(0);
@@ -60,6 +62,41 @@ export default function CheckoutPage() {
         }));
       }
     } finally { setLoadingCep(false); }
+  };
+
+  const loadShipping = async () => {
+    const cleaned = address.cep.replace(/\D/g, "");
+    if (cleaned.length !== 8 || !cart?.items?.length) return;
+    setShipLoading(true);
+    setShipOptions(null);
+    try {
+      const r = await fetch("/api/shipping/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          zipTo: cleaned,
+          subtotal: total,
+          items: cart.items.map((i: any) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+          })),
+        }),
+      });
+      const d = await r.json();
+      if (r.ok && Array.isArray(d.options)) {
+        setShipOptions(d.options);
+        const o = d.options[0];
+        if (o) setShipping({ carrier: o.base || "SmartEnvios", service: o.service, amount: o.free ? 0 : o.finalValue });
+      } else {
+        setShipOptions([]);
+        toast({ title: "Não foi possível calcular o frete", description: d.error, variant: "destructive" });
+      }
+    } catch {
+      setShipOptions([]);
+    } finally {
+      setShipLoading(false);
+    }
   };
 
   const applyCoupon = async () => {
@@ -243,6 +280,7 @@ export default function CheckoutPage() {
                             toast({ title: "Preencha o endereço completo", variant: "destructive" }); return;
                           }
                           setStep(3);
+                          loadShipping();
                         }}
                       >
                         Continuar <ChevronRight size={16} className="ml-1" />
@@ -257,25 +295,33 @@ export default function CheckoutPage() {
                 <div>
                   <h2 className="text-lg font-semibold text-gray-800 mb-4">Forma de envio</h2>
                   <div className="space-y-3">
-                    {[
-                      { carrier: "Correios", service: "PAC", label: "PAC – Econômico", price: 18.90, days: "5-8 dias úteis" },
-                      { carrier: "Correios", service: "SEDEX", label: "SEDEX – Expresso", price: 29.90, days: "1-3 dias úteis" },
-                      { carrier: "Transportadora", service: "Econômico", label: "Transportadora – Econômico", price: 22.90, days: "3-6 dias úteis" },
-                    ].map(opt => (
-                      <label key={opt.service} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${shipping.service === opt.service ? "border-2" : "border-gray-200 hover:border-gray-300"}`}
-                        style={shipping.service === opt.service ? { borderColor: primaryColor, background: `${primaryColor}10` } : {}}>
-                        <input type="radio" name="shipping" value={opt.service}
-                          checked={shipping.service === opt.service}
-                          onChange={() => setShipping({ carrier: opt.carrier, service: opt.service, amount: opt.price })}
-                          className="accent-blue-600"
-                        />
-                        <div className="flex-1">
-                          <p className="text-sm font-medium text-gray-800">{opt.label}</p>
-                          <p className="text-xs text-gray-400">{opt.days}</p>
-                        </div>
-                        <span className="font-semibold text-gray-800">R$ {opt.price.toFixed(2).replace(".", ",")}</span>
-                      </label>
-                    ))}
+                    {shipLoading && (
+                      <p className="text-sm text-gray-400">Calculando frete...</p>
+                    )}
+                    {shipOptions && shipOptions.length === 0 && !shipLoading && (
+                      <p className="text-sm text-gray-400">Nenhuma opção de frete para este CEP.</p>
+                    )}
+                    {(shipOptions || []).map(opt => {
+                      const selected = shipping.service === opt.service;
+                      const price = opt.free ? 0 : opt.finalValue;
+                      return (
+                        <label key={opt.id + opt.service} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selected ? "border-2" : "border-gray-200 hover:border-gray-300"}`}
+                          style={selected ? { borderColor: primaryColor, background: `${primaryColor}10` } : {}}>
+                          <input type="radio" name="shipping"
+                            checked={selected}
+                            onChange={() => setShipping({ carrier: opt.base || "SmartEnvios", service: opt.service, amount: price })}
+                            className="accent-blue-600"
+                          />
+                          <div className="flex-1">
+                            <p className="text-sm font-medium text-gray-800">{opt.service}</p>
+                            <p className="text-xs text-gray-400">{opt.days} dias úteis</p>
+                          </div>
+                          <span className="font-semibold text-gray-800">
+                            {opt.free ? "Grátis" : `R$ ${price.toFixed(2).replace(".", ",")}`}
+                          </span>
+                        </label>
+                      );
+                    })}
                     <div className="flex gap-3 pt-2">
                       <Button variant="outline" onClick={() => setStep(2)} className="flex-1">Voltar</Button>
                       <Button className="flex-1 py-3 text-white" style={{ background: primaryColor }} onClick={() => setStep(4)}>

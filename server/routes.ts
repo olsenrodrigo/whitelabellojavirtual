@@ -61,6 +61,29 @@ function getSmtpConfig() {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  // Seed: cria um admin padrão no primeiro boot (se ainda não existir nenhum).
+  // Personalize com ADMIN_EMAIL / ADMIN_PASSWORD no .env.
+  (async () => {
+    try {
+      const admins = await storage.listAdminUsers();
+      if (admins.length === 0) {
+        const email = process.env.ADMIN_EMAIL || "admin@puraflora.com.br";
+        const password = process.env.ADMIN_PASSWORD || "PuraFlora@2026";
+        await storage.createAdminUser({
+          name: "Administrador",
+          email,
+          passwordHash: hashPassword(password),
+          role: "admin",
+          active: true,
+          mustChangePassword: false,
+        });
+        console.log(`[seed] admin padrão criado: ${email}`);
+      }
+    } catch (e) {
+      console.warn("[seed] admin não criado (banco pode não estar pronto):", (e as Error).message);
+    }
+  })();
+
   // Serve uploaded files
   app.use("/uploads", (req, res, next) => {
     res.setHeader("Cache-Control", "public, max-age=86400");
