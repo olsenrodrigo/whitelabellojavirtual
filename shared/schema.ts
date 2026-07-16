@@ -57,6 +57,22 @@ export const DEFAULT_PAYMENT_CONFIG: PaymentConfig = {
   credit_card: { enabled: true, gateway: "mercadopago", mode: "embedded" },
 };
 
+// ─── Analytics & Pixels (medição de funil) ───────────────────────────────────
+// Só IDs PÚBLICOS de pixel (podem ir ao front). Nunca guardar aqui tokens
+// secretos (ex.: Meta Conversions API) — esses vão em coluna própria.
+export interface AnalyticsConfig {
+  ga4MeasurementId?: string; // G-XXXXXXX
+  metaPixelId?: string;      // Meta/Facebook Pixel
+  tiktokPixelId?: string;    // TikTok Pixel (opcional)
+  requireConsent?: boolean;  // LGPD: exigir consentimento antes de carregar (default true)
+}
+export const ANALYTICS_CONFIG_KEYS: (keyof AnalyticsConfig)[] = [
+  "ga4MeasurementId",
+  "metaPixelId",
+  "tiktokPixelId",
+  "requireConsent",
+];
+
 export const storeSettings = pgTable("store_settings", {
   id: serial("id").primaryKey(),
   storeName: text("store_name").notNull().default("Minha Loja"),
@@ -74,6 +90,7 @@ export const storeSettings = pgTable("store_settings", {
   mercadoPagoToken: text("mercado_pago_token"),
   mercadoPagoPublicKey: text("mercado_pago_public_key"),
   paymentConfig: jsonb("payment_config").$type<PaymentConfig>(),
+  analyticsConfig: jsonb("analytics_config").$type<AnalyticsConfig>(),
   smtpHost: text("smtp_host"),
   smtpPort: integer("smtp_port"),
   smtpUser: text("smtp_user"),

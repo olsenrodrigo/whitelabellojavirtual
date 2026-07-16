@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { trackBeginCheckout, useAnalyticsReady } from "@/lib/analytics";
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -55,6 +56,23 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (!cart || cart.items.length === 0) navigate("/loja/carrinho");
   }, [cart]);
+
+  // Analytics: begin_checkout (1x, quando há itens e o analytics está pronto)
+  const analyticsOn = useAnalyticsReady();
+  const [beganCheckout, setBeganCheckout] = useState(false);
+  useEffect(() => {
+    if (!beganCheckout && analyticsOn && cart?.items?.length) {
+      setBeganCheckout(true);
+      trackBeginCheckout(
+        cart.items.map((i: any) => ({
+          slug: String(i.productId),
+          name: i.productTitle,
+          price: Number(i.unitPrice),
+          quantity: i.quantity,
+        }))
+      );
+    }
+  }, [analyticsOn, cart, beganCheckout]);
 
   const primaryColor = storeInfo.primaryColor || "#5B8C9B";
 

@@ -1,5 +1,6 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, useLocation } from "wouter";
 import { useEffect } from "react";
+import CookieConsent from "@/components/CookieConsent";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -111,6 +112,9 @@ function App() {
       .catch(() => {});
   }, []);
 
+  const [location] = useLocation();
+  const isAdmin = location.startsWith("/admin");
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
@@ -118,6 +122,7 @@ function App() {
           <CartProvider>
             <Router />
             <Toaster />
+            {!isAdmin && <CookieConsent />}
           </CartProvider>
         </AdminAuthProvider>
       </TooltipProvider>

@@ -4,6 +4,7 @@ import { CheckCircle, Package, Clock, Copy, ExternalLink } from "lucide-react";
 import StoreNavbar from "@/components/store/StoreNavbar";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { trackPurchase, useAnalyticsReady } from "@/lib/analytics";
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   pending_payment: { label: "Aguardando pagamento", color: "#f59e0b" },
@@ -20,11 +21,30 @@ export default function OrderConfirmationPage() {
   const [loading, setLoading] = useState(true);
   const [storeInfo, setStoreInfo] = useState<any>({});
   const { toast } = useToast();
+  const analyticsOn = useAnalyticsReady();
 
   useEffect(() => {
     fetch("/api/store/settings").then(r => r.json()).then(setStoreInfo).catch(() => {});
     fetch(`/api/orders/${orderNumber}`).then(r => r.json()).then(setOrder).finally(() => setLoading(false));
   }, [orderNumber]);
+
+  // Analytics: purchase ao chegar na confirmação (pedido colocado). Dedup interno
+  // por orderNumber garante 1x mesmo com reload/reemissão após consentimento.
+  useEffect(() => {
+    if (order && order.orderNumber && analyticsOn) {
+      trackPurchase({
+        orderNumber: order.orderNumber,
+        value: Number(order.total),
+        coupon: order.couponCode || undefined,
+        items: (order.items || []).map((i: any) => ({
+          slug: String(i.productId ?? i.id),
+          name: i.productTitle,
+          price: Number(i.unitPrice ?? (Number(i.totalPrice) / (i.quantity || 1))),
+          quantity: i.quantity,
+        })),
+      });
+    }
+  }, [order, analyticsOn]);
 
   const primaryColor = storeInfo.primaryColor || "#5B8C9B";
   const copyToClipboard = (text: string, label: string) => {

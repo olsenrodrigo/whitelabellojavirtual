@@ -5,6 +5,7 @@ import StoreNavbar from "@/components/store/StoreNavbar";
 import { Button } from "@/components/ui/button";
 import { useCart } from "@/context/CartContext";
 import { useToast } from "@/hooks/use-toast";
+import { trackViewItem, trackAddToCart, useAnalyticsReady } from "@/lib/analytics";
 
 interface ProductImage { id: number; url: string; altText?: string; isMain: boolean; position: number; }
 interface Variant { id: number; sku?: string; price: string; compareAtPrice?: string; stockQuantity: number; option1?: string; option2?: string; option3?: string; imageUrl?: string; active: boolean; }
@@ -25,6 +26,7 @@ export default function ProductDetailPage() {
   const [storeInfo, setStoreInfo] = useState<any>({});
   const { addToCart, loading: cartLoading } = useCart();
   const { toast } = useToast();
+  const analyticsOn = useAnalyticsReady();
 
   useEffect(() => {
     fetch("/api/store/settings").then(r => r.json()).then(setStoreInfo).catch(() => {});
@@ -34,6 +36,13 @@ export default function ProductDetailPage() {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [slug]);
+
+  // Analytics: view_item ao abrir a página (reemite se o consentimento chegar depois)
+  useEffect(() => {
+    if (product && analyticsOn) {
+      trackViewItem({ slug: product.slug, name: product.title, price: Number(product.price) });
+    }
+  }, [product, analyticsOn]);
 
   const primaryColor = storeInfo.primaryColor || "#5B8C9B";
 
@@ -56,6 +65,7 @@ export default function ProductDetailPage() {
 
   const handleAddToCart = async () => {
     await addToCart(product.id, selectedVariant?.id || null, quantity);
+    trackAddToCart({ slug: product.slug, name: product.title, price: Number(effectivePrice), quantity });
     toast({ title: "Adicionado ao carrinho!", description: `${product.title} × ${quantity}` });
   };
 

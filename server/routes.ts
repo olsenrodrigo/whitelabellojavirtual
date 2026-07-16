@@ -7,7 +7,7 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import * as XLSX from "xlsx";
 import { storage } from "./storage";
-import { insertContactMessageSchema, checkoutSchema } from "@shared/schema";
+import { insertContactMessageSchema, checkoutSchema, ANALYTICS_CONFIG_KEYS } from "@shared/schema";
 import { z } from "zod";
 import { fromError } from "zod-validation-error";
 import { sendContactEmail } from "./email";
@@ -938,7 +938,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json(s || {});
   });
   app.put("/api/admin/settings", requireAdmin, async (req, res) => {
-    const s = await storage.upsertStoreSettings(req.body);
+    const body = { ...req.body };
+    // analyticsConfig: whitelist explícita das chaves (só IDs públicos + toggle).
+    if ("analyticsConfig" in body) {
+      const raw = body.analyticsConfig;
+      if (raw && typeof raw === "object") {
+        const out: Record<string, unknown> = {};
+        for (const k of ANALYTICS_CONFIG_KEYS) {
+          if (!(k in raw)) continue;
+          if (k === "requireConsent") out[k] = raw[k] !== false;
+          else out[k] = typeof raw[k] === "string" ? raw[k].trim() : "";
+        }
+        body.analyticsConfig = out;
+      } else {
+        body.analyticsConfig = null;
+      }
+    }
+    const s = await storage.upsertStoreSettings(body);
     return res.json(s);
   });
 

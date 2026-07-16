@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Save, Store, Mail, CreditCard, Truck, Palette, Upload } from "lucide-react";
+import { Save, Store, Mail, CreditCard, Truck, Palette, Upload, BarChart3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,6 +21,7 @@ const TABS = [
   { id: "appearance", label: "Aparência",  icon: Palette },
   { id: "email",      label: "E-mail",     icon: Mail },
   { id: "payment",    label: "Pagamento",  icon: CreditCard },
+  { id: "analytics",  label: "Analytics",  icon: BarChart3 },
   { id: "shipping",   label: "Envio",      icon: Truck },
 ];
 
@@ -53,6 +54,10 @@ export default function AdminSettings() {
   };
   const setPay = (method: string, patch: any) =>
     set("paymentConfig", { ...pc, [method]: { ...(pc[method] || {}), ...patch } });
+
+  // Config de analytics/pixels (só IDs públicos)
+  const ac = settings.analyticsConfig || {};
+  const setAc = (patch: any) => set("analyticsConfig", { ...ac, ...patch });
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-200 border-t-gray-900" /></div>;
 
@@ -389,6 +394,41 @@ export default function AdminSettings() {
               </div>
             </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === "analytics" && (
+          <div className="space-y-4">
+            <div>
+              <h3 className="font-semibold text-gray-800 mb-1">Analytics &amp; Pixels</h3>
+              <p className="text-sm text-gray-500 mb-4">
+                Medição do funil (view_item, add_to_cart, begin_checkout, purchase). Cole só os IDs públicos de pixel.
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div>
+                <Label>Google Analytics 4</Label>
+                <Input value={ac.ga4MeasurementId || ""} onChange={e => setAc({ ga4MeasurementId: e.target.value })}
+                  placeholder="G-XXXXXXXXXX" className="mt-1 font-mono" />
+              </div>
+              <div>
+                <Label>Meta Pixel</Label>
+                <Input value={ac.metaPixelId || ""} onChange={e => setAc({ metaPixelId: e.target.value })}
+                  placeholder="123456789012345" className="mt-1 font-mono" />
+              </div>
+              <div>
+                <Label>TikTok Pixel <span className="text-gray-400 font-normal">(opcional)</span></Label>
+                <Input value={ac.tiktokPixelId || ""} onChange={e => setAc({ tiktokPixelId: e.target.value })}
+                  placeholder="CXXXXXXXXXXXXXXXXX" className="mt-1 font-mono" />
+              </div>
+            </div>
+            <label className="flex items-start gap-3 cursor-pointer pt-1">
+              <input type="checkbox" checked={ac.requireConsent !== false}
+                onChange={e => setAc({ requireConsent: e.target.checked })} className="mt-0.5 h-4 w-4" />
+              <span className="text-sm text-gray-600">
+                Exigir consentimento (LGPD) antes de carregar os pixels — recomendado. Sem isso, os pixels carregam para todos os visitantes.
+              </span>
+            </label>
           </div>
         )}
 
