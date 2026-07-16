@@ -117,7 +117,7 @@ export async function createOrder(
   const body = {
     preference_by: input.preferenceBy ?? "QUOTE_VALUE",
     external_order_id: input.externalOrderId,
-    external_origin: input.externalOrigin ?? "PuraFlora",
+    external_origin: input.externalOrigin ?? "LojaVirtual",
     source: "API",
     pickup: input.pickup ?? true,
     delivery: input.delivery ?? true,
