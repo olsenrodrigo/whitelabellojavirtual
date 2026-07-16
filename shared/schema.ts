@@ -414,6 +414,8 @@ export const checkoutSchema = z.object({
   cardInstallments: z.number().optional(),
   // Cupom
   couponCode: z.string().optional(),
+  // Canal: "online" (gateway) ou "whatsapp" (fecha pelo WhatsApp, sem cobrança online)
+  channel: z.enum(["online", "whatsapp"]).optional(),
   // Carrinho
   sessionId: z.string(),
 });

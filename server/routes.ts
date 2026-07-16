@@ -266,11 +266,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const shippingAmount = data.shippingAmount || 0;
     const total = subtotal - discountAmount + shippingAmount;
 
+    // Canal WhatsApp: cria o pedido sem cobrança online (pagamento negociado no chat).
+    const viaWhatsapp = data.channel === "whatsapp";
+
     // Config de pagamento — valida se o método é aceito ANTES de criar o pedido.
     const settings = await storage.getStoreSettings();
     const payCfg = resolvePaymentConfig(settings);
     const mc = methodConfig(payCfg, data.paymentMethod);
-    if (!mc || !mc.enabled) {
+    if (!viaWhatsapp && (!mc || !mc.enabled)) {
       return res.status(400).json({ message: `Forma de pagamento indisponível: ${data.paymentMethod}` });
     }
 
@@ -320,10 +323,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.decrementStock(item.productId, item.quantity);
     }
 
-    // Process payment — roteia pelo gateway configurado para o método.
-    const gatewayId = mc.gateway;
-
+    // Process payment (só no canal online) — roteia pelo gateway configurado.
     let paymentResult: any = { success: true };
+    if (!viaWhatsapp) {
+    const gatewayId = mc!.gateway;
     if (gatewayId === "asaas") {
       paymentResult = await asaasGateway.createPayment({
         amount: total,
@@ -382,6 +385,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         await storage.updateOrderPayment(order.id, "approved", paymentResult.transactionId);
       }
     }
+    } // fim do canal online
 
     // Clear cart
     await storage.clearCart(data.sessionId);
@@ -412,7 +416,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       orderId: order.id,
       total,
       paymentMethod: data.paymentMethod,
-      gateway: gatewayId,
+      channel: viaWhatsapp ? "whatsapp" : "online",
+      gateway: viaWhatsapp ? null : mc?.gateway,
       pixQrCode: paymentResult.pixQrCode,
       pixQrCodeBase64: paymentResult.pixQrCodeBase64,
       boletoUrl: paymentResult.boletoUrl,

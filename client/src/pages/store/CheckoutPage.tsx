@@ -143,25 +143,27 @@ export default function CheckoutPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [total, autoCouponTried]);
 
+  const buildPayload = (channel: "online" | "whatsapp") => ({
+    customerName: identity.name, customerEmail: identity.email,
+    customerPhone: identity.phone.replace(/\D/g, ""),
+    customerCpf: identity.cpf.replace(/\D/g, ""),
+    shippingRecipient: address.recipient || identity.name,
+    shippingCep: address.cep, shippingLogradouro: address.logradouro,
+    shippingNumero: address.numero, shippingComplemento: address.complemento,
+    shippingBairro: address.bairro, shippingCidade: address.cidade, shippingEstado: address.estado,
+    shippingCarrier: shipping.carrier, shippingService: shipping.service,
+    shippingAmount: shipping.amount,
+    paymentMethod, couponCode: couponCode || undefined,
+    channel, sessionId,
+  });
+
   const handlePlaceOrder = async () => {
     setLoading(true);
     try {
       const r = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customerName: identity.name, customerEmail: identity.email,
-          customerPhone: identity.phone.replace(/\D/g, ""),
-          customerCpf: identity.cpf.replace(/\D/g, ""),
-          shippingRecipient: address.recipient || identity.name,
-          shippingCep: address.cep, shippingLogradouro: address.logradouro,
-          shippingNumero: address.numero, shippingComplemento: address.complemento,
-          shippingBairro: address.bairro, shippingCidade: address.cidade, shippingEstado: address.estado,
-          shippingCarrier: shipping.carrier, shippingService: shipping.service,
-          shippingAmount: shipping.amount,
-          paymentMethod, couponCode: couponCode || undefined,
-          sessionId,
-        }),
+        body: JSON.stringify(buildPayload("online")),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.message || "Erro ao finalizar pedido");
@@ -169,6 +171,39 @@ export default function CheckoutPage() {
       if (d.redirectUrl) { window.location.href = d.redirectUrl; return; }
       navigate(`/loja/pedido/${d.orderNumber}`);
     } catch (e: any) {
+      toast({ title: "Erro", description: e.message, variant: "destructive" });
+    } finally { setLoading(false); }
+  };
+
+  const handleWhatsApp = async () => {
+    const phone = String(storeInfo.contactWhatsapp || "").replace(/\D/g, "");
+    if (!phone) { toast({ title: "WhatsApp não configurado pela loja", variant: "destructive" }); return; }
+    const waWindow = window.open("", "_blank"); // abre no gesto (evita bloqueio de popup)
+    setLoading(true);
+    try {
+      const r = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload("whatsapp")),
+      });
+      const d = await r.json();
+      if (!r.ok) { waWindow?.close(); throw new Error(d.message || "Erro ao finalizar pedido"); }
+      const waTotal = total - couponDiscount + shipping.amount;
+      const itemLines = (cart?.items || []).map((i: any) => `• ${i.quantity}x ${i.productTitle} — R$ ${(Number(i.unitPrice) * i.quantity).toFixed(2)}`).join("\n");
+      const msg = [
+        `Olá! Quero finalizar meu pedido *${d.orderNumber}*:`, "", itemLines, "",
+        `Subtotal: R$ ${total.toFixed(2)}`,
+        couponDiscount > 0 ? `Desconto (${couponCode}): -R$ ${couponDiscount.toFixed(2)}` : "",
+        `Frete: R$ ${shipping.amount.toFixed(2)}${shipping.service ? ` (${shipping.service})` : ""}`,
+        `Total: R$ ${waTotal.toFixed(2)}`, "",
+        `Nome: ${identity.name}`,
+        `Endereço: ${address.logradouro}, ${address.numero}${address.complemento ? ` — ${address.complemento}` : ""} — ${address.bairro}, ${address.cidade}/${address.estado} — CEP ${address.cep}`,
+      ].filter(Boolean).join("\n");
+      const url = `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+      if (waWindow) waWindow.location.href = url; else window.open(url, "_blank");
+      navigate(`/loja/pedido/${d.orderNumber}`);
+    } catch (e: any) {
+      waWindow?.close();
       toast({ title: "Erro", description: e.message, variant: "destructive" });
     } finally { setLoading(false); }
   };
@@ -406,6 +441,22 @@ export default function CheckoutPage() {
                       {loading ? "Processando..." : `Finalizar — R$ ${(paymentMethod === "pix" ? pixTotal : orderTotal).toFixed(2).replace(".", ",")}`}
                     </Button>
                   </div>
+
+                  {storeInfo.contactWhatsapp && (
+                    <>
+                      <div className="my-3 flex items-center gap-3 text-xs text-gray-400">
+                        <span className="h-px flex-1 bg-gray-200" /> ou <span className="h-px flex-1 bg-gray-200" />
+                      </div>
+                      <Button
+                        type="button"
+                        onClick={handleWhatsApp}
+                        disabled={loading}
+                        className="w-full py-3 font-semibold border border-green-600 bg-white text-green-700 hover:bg-green-50"
+                      >
+                        Finalizar pelo WhatsApp
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
