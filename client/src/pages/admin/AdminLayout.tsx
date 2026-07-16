@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Package, ShoppingBag, Users as UsersIcon, Settings,
   Upload, Tag, LogOut, Menu, X, ExternalLink, Store, FolderOpen, Star,
-  BarChart2, UserCog, Repeat, ShoppingCart
+  BarChart2, UserCog, Repeat, ShoppingCart, MessageSquare
 } from "lucide-react";
 import { useAdminAuth } from "@/context/AdminAuthContext";
 
@@ -13,6 +13,7 @@ const ALL_NAV_ITEMS = [
   { href: "/admin/produtos", icon: Package, label: "Produtos", roles: ["admin", "operacao"] },
   { href: "/admin/categorias", icon: FolderOpen, label: "Categorias", roles: ["admin", "operacao"] },
   { href: "/admin/destaques", icon: Star, label: "Destaques", roles: ["admin", "operacao"] },
+  { href: "/admin/avaliacoes", icon: MessageSquare, label: "Avaliações", roles: ["admin", "operacao"] },
   { href: "/admin/pedidos", icon: ShoppingBag, label: "Pedidos", roles: ["admin", "financeiro"] },
   { href: "/admin/assinaturas", icon: Repeat, label: "Assinaturas", roles: ["admin", "financeiro"] },
   { href: "/admin/carrinhos", icon: ShoppingCart, label: "Carrinhos", roles: ["admin", "operacao"] },

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useCart } from "@/context/CartContext";
 import { useToast } from "@/hooks/use-toast";
 import { trackViewItem, trackAddToCart, useAnalyticsReady } from "@/lib/analytics";
+import ReviewsSection from "@/components/store/ReviewsSection";
 
 interface ProductImage { id: number; url: string; altText?: string; isMain: boolean; position: number; }
 interface Variant { id: number; sku?: string; price: string; compareAtPrice?: string; stockQuantity: number; option1?: string; option2?: string; option3?: string; imageUrl?: string; active: boolean; }
@@ -219,7 +220,31 @@ export default function ProductDetailPage() {
                 dangerouslySetInnerHTML={{ __html: product.description }} />
             </div>
           )}
+
+          {/* Avaliações */}
+          <div className="px-6 pb-8">
+            <ReviewsSection slug={product.slug} primaryColor={primaryColor} />
+          </div>
         </div>
+
+        {/* SEO: AggregateRating só com avaliações reais */}
+        {Number((product as any).ratingCount) > 0 && (
+          <script
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{
+              __html: JSON.stringify({
+                "@context": "https://schema.org",
+                "@type": "Product",
+                name: product.title,
+                aggregateRating: {
+                  "@type": "AggregateRating",
+                  ratingValue: (product as any).ratingAvg,
+                  reviewCount: (product as any).ratingCount,
+                },
+              }),
+            }}
+          />
+        )}
       </div>
     </div>
   );

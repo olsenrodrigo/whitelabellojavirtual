@@ -146,6 +146,17 @@ export default function AdminSettings() {
                 Placeholders: {"{nome}"} {"{itens}"} {"{link}"} {"{cupom}"}. Em branco usa o texto padrão.
               </p>
             </div>
+            <div className="border-t pt-4 space-y-2">
+              <span className="block text-sm font-semibold text-gray-800">Avaliações de produtos</span>
+              <label className="flex items-center gap-2.5 text-sm text-gray-600 cursor-pointer">
+                <input type="checkbox" checked={settings.reviewsEnabled !== false} onChange={e => set("reviewsEnabled", e.target.checked)} className="h-4 w-4" />
+                Permitir que clientes avaliem produtos
+              </label>
+              <label className="flex items-center gap-2.5 text-sm text-gray-600 cursor-pointer">
+                <input type="checkbox" checked={settings.reviewsRequireModeration !== false} onChange={e => set("reviewsRequireModeration", e.target.checked)} className="h-4 w-4" />
+                Exigir moderação antes de publicar (recomendado)
+              </label>
+            </div>
           </div>
         )}
 

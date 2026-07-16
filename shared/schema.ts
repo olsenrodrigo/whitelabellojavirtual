@@ -104,6 +104,8 @@ export const storeSettings = pgTable("store_settings", {
   maxInstallments: integer("max_installments").notNull().default(12),
   freeInstallments: integer("free_installments").notNull().default(3),
   monthlyInterestRate: decimal("monthly_interest_rate", { precision: 5, scale: 4 }).notNull().default("0.0199"),
+  reviewsEnabled: boolean("reviews_enabled").notNull().default(true),
+  reviewsRequireModeration: boolean("reviews_require_moderation").notNull().default(true),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -154,6 +156,9 @@ export const products = pgTable("products", {
   published: boolean("published").notNull().default(true),
   featured: boolean("featured").notNull().default(false),
   freeShipping: boolean("free_shipping").notNull().default(false),
+  // Agregado denormalizado de avaliações (recalculado na moderação)
+  ratingAvg: decimal("rating_avg", { precision: 2, scale: 1 }).notNull().default("0"),
+  ratingCount: integer("rating_count").notNull().default(0),
   seoTitle: text("seo_title"),
   seoDescription: text("seo_description"),
   ncmCode: text("ncm_code"),
@@ -395,6 +400,26 @@ export const coupons = pgTable("coupons", {
 export const insertCouponSchema = createInsertSchema(coupons).omit({ id: true, createdAt: true, usedCount: true });
 export type InsertCoupon = z.infer<typeof insertCouponSchema>;
 export type Coupon = typeof coupons.$inferSelect;
+
+// ─── Avaliações de produtos ───────────────────────────────────────────────────
+// O e-mail nunca é exibido publicamente (só para verificação de compra).
+export const productReviews = pgTable("product_reviews", {
+  id: serial("id").primaryKey(),
+  productId: integer("product_id").notNull(),
+  customerId: integer("customer_id"),
+  rating: integer("rating").notNull(), // 1..5
+  authorName: text("author_name").notNull(),
+  authorEmail: text("author_email"), // interno — nunca vai ao público
+  title: text("title"),
+  comment: text("comment"),
+  status: text("status").notNull().default("pending"), // pending | approved | rejected
+  verifiedPurchase: boolean("verified_purchase").notNull().default(false),
+  adminReply: text("admin_reply"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  moderatedAt: timestamp("moderated_at"),
+  moderatedBy: text("moderated_by"),
+});
+export type ProductReview = typeof productReviews.$inferSelect;
 
 // ─── Assinaturas ("assine e receba") ──────────────────────────────────────────
 // Espelho local da assinatura recorrente do Asaas, com snapshot dos itens e do

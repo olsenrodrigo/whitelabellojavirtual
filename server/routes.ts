@@ -186,6 +186,68 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({ ...product, images, variants: variantList });
   });
 
+  // ─── Avaliações de produtos ────────────────────────────────────────────────
+  const reviewHits = new Map<string, { count: number; resetAt: number }>();
+  setInterval(() => {
+    const now = Date.now();
+    reviewHits.forEach((v, k) => { if (now > v.resetAt) reviewHits.delete(k); });
+  }, 5 * 60_000).unref();
+  const reviewRateLimited = (ip: string) => {
+    const now = Date.now();
+    const cur = reviewHits.get(ip);
+    if (!cur || now > cur.resetAt) { reviewHits.set(ip, { count: 1, resetAt: now + 60_000 }); return false; }
+    cur.count += 1;
+    return cur.count > 5;
+  };
+  const reviewSchema = z.object({
+    rating: z.number().int().min(1).max(5),
+    authorName: z.string().min(1).max(80),
+    title: z.string().max(120).nullable().optional(),
+    comment: z.string().max(2000).nullable().optional(),
+    authorEmail: z.string().email().max(160).nullable().optional(),
+    orderNumber: z.string().max(40).nullable().optional(),
+    website: z.string().max(200).optional(), // honeypot
+  });
+
+  app.get("/api/store/products/:slug/reviews", async (req, res) => {
+    const product = await storage.getProductBySlug(req.params.slug);
+    if (!product) return res.status(404).json({ message: "Produto não encontrado" });
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const [reviews, aggregate, settings] = await Promise.all([
+      storage.listApprovedReviews(product.id, 10, (page - 1) * 10),
+      storage.getReviewAggregate(product.id),
+      storage.getStoreSettings(),
+    ]);
+    return res.json({ aggregate, reviews, page, reviewsEnabled: (settings as any)?.reviewsEnabled !== false });
+  });
+
+  app.post("/api/store/products/:slug/reviews", async (req, res) => {
+    const settings = await storage.getStoreSettings();
+    if ((settings as any)?.reviewsEnabled === false) return res.status(403).json({ message: "Avaliações desativadas" });
+    const product = await storage.getProductBySlug(req.params.slug);
+    if (!product || product.status !== "active") return res.status(404).json({ message: "Produto não encontrado" });
+    const parsed = reviewSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Dados inválidos" });
+    const input = parsed.data;
+    if (input.website) return res.json({ ok: true }); // honeypot
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    if (reviewRateLimited(ip)) return res.status(429).json({ message: "Muitas avaliações, tente mais tarde" });
+
+    let verified = false;
+    if (input.orderNumber && input.authorEmail) {
+      verified = await storage.verifyPurchase(input.orderNumber, input.authorEmail, product.id);
+    }
+    const requireModeration = (settings as any)?.reviewsRequireModeration !== false;
+    const payload = {
+      productId: product.id, rating: input.rating, authorName: input.authorName,
+      authorEmail: input.authorEmail ?? null, title: input.title ?? null,
+      comment: input.comment ?? null, verifiedPurchase: verified,
+    };
+    if (requireModeration) await storage.createReview({ ...payload, status: "pending" });
+    else await storage.createReviewApproved(payload);
+    return res.json({ ok: true, status: requireModeration ? "pending" : "approved", verifiedPurchase: verified });
+  });
+
   // Cart
   app.get("/api/cart/:sessionId", async (req, res) => {
     const cart = await storage.getOrCreateCart(req.params.sessionId);
@@ -1428,6 +1490,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const row = await storage.updateCartRecoveryStatus(Number(req.params.id), status);
     if (!row) return res.status(404).json({ message: "Não encontrado ou já convertido" });
     return res.json(row);
+  });
+
+  // ─ Avaliações admin ────────────────────────────────────────────────────────
+  app.get("/api/admin/reviews", requireAdmin, async (req, res) => {
+    const status = typeof req.query.status === "string" ? req.query.status : undefined;
+    const page = Math.max(1, Number(req.query.page) || 1);
+    return res.json(await storage.listReviewsAdmin(status, 50, (page - 1) * 50));
+  });
+  app.get("/api/admin/reviews/pending-count", requireAdmin, async (_req, res) => {
+    return res.json({ count: await storage.countPendingReviews() });
+  });
+  app.patch("/api/admin/reviews/:id", requireAdmin, async (req: any, res) => {
+    const status = typeof req.body?.status === "string" ? req.body.status : null;
+    if (!status || !["approved", "rejected", "pending"].includes(status))
+      return res.status(400).json({ message: "Status inválido" });
+    const adminReply = typeof req.body?.adminReply === "string" ? req.body.adminReply.slice(0, 2000) : undefined;
+    const updated = await storage.moderateReview(Number(req.params.id), { status, adminReply }, req.admin?.email || "admin");
+    if (!updated) return res.status(404).json({ message: "Avaliação não encontrada" });
+    return res.json(updated);
+  });
+  app.delete("/api/admin/reviews/:id", requireAdmin, async (req, res) => {
+    const row = await storage.deleteReview(Number(req.params.id));
+    if (!row) return res.status(404).json({ message: "Avaliação não encontrada" });
+    return res.status(204).send();
   });
 
   // ─ Financial Reports ─────────────────────────────────────────────────────────

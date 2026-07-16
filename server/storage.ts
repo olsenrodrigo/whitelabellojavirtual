@@ -2,7 +2,7 @@ import {
   contactMessages, adminUsers, categories, products, productImages,
   variants, customers, addresses, cartSessions, cartItems, orders,
   orderItems, orderStatusHistory, paymentTransactions, coupons, subscriptions,
-  shippingZones, shippingRates, storeSettings,
+  productReviews, shippingZones, shippingRates, storeSettings,
   type Subscription, type InsertSubscription,
   type ContactMessage, type InsertContactMessage,
   type AdminUser, type InsertAdminUser,
@@ -489,6 +489,88 @@ export class DatabaseStorage {
   }
   async deleteCoupon(id: number): Promise<void> {
     await db.delete(coupons).where(eq(coupons.id, id));
+  }
+
+  // ─── Avaliações de produtos ────────────────────────────────────────────────
+  async createReview(data: any): Promise<any> {
+    const [row] = await db.insert(productReviews).values(data).returning();
+    return row;
+  }
+  /** Reviews aprovadas (nunca devolve authorEmail). */
+  async listApprovedReviews(productId: number, limit = 10, offset = 0): Promise<any[]> {
+    return db.select({
+      id: productReviews.id, rating: productReviews.rating, authorName: productReviews.authorName,
+      title: productReviews.title, comment: productReviews.comment,
+      verifiedPurchase: productReviews.verifiedPurchase, adminReply: productReviews.adminReply,
+      createdAt: productReviews.createdAt,
+    }).from(productReviews)
+      .where(and(eq(productReviews.productId, productId), eq(productReviews.status, "approved")))
+      .orderBy(desc(productReviews.createdAt)).limit(limit).offset(offset);
+  }
+  async getReviewAggregate(productId: number): Promise<{ count: number; average: number; distribution: Record<number, number> }> {
+    const rows = await db.select({ rating: productReviews.rating }).from(productReviews)
+      .where(and(eq(productReviews.productId, productId), eq(productReviews.status, "approved")));
+    const distribution: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    let sum = 0;
+    for (const r of rows) { if (r.rating >= 1 && r.rating <= 5) distribution[r.rating] += 1; sum += r.rating; }
+    const count = rows.length;
+    return { count, average: count ? Math.round((sum / count) * 10) / 10 : 0, distribution };
+  }
+  async listReviewsAdmin(status?: string, limit = 100, offset = 0): Promise<any[]> {
+    const where = status ? eq(productReviews.status, status) : undefined;
+    return db.select().from(productReviews).where(where as any)
+      .orderBy(desc(productReviews.createdAt)).limit(limit).offset(offset);
+  }
+  async countPendingReviews(): Promise<number> {
+    const [r] = await db.select({ n: sql<number>`count(*)` }).from(productReviews)
+      .where(eq(productReviews.status, "pending"));
+    return Number(r?.n ?? 0);
+  }
+  private async recalcRatingTx(trx: any, productId: number): Promise<void> {
+    // Serializa moderações concorrentes do mesmo produto.
+    await trx.execute(sql`SELECT id FROM ${products} WHERE ${products.id} = ${productId} FOR UPDATE`);
+    const rows = await trx.select({ rating: productReviews.rating }).from(productReviews)
+      .where(and(eq(productReviews.productId, productId), eq(productReviews.status, "approved")));
+    const count = rows.length;
+    const avg = count ? rows.reduce((s: number, r: { rating: number }) => s + r.rating, 0) / count : 0;
+    await trx.update(products).set({ ratingAvg: avg.toFixed(1), ratingCount: count })
+      .where(eq(products.id, productId));
+  }
+  async createReviewApproved(data: any): Promise<any> {
+    return db.transaction(async (trx) => {
+      const [row] = await trx.insert(productReviews).values({ ...data, status: "approved" }).returning();
+      await this.recalcRatingTx(trx, row.productId);
+      return row;
+    });
+  }
+  async moderateReview(id: number, patch: { status: string; adminReply?: string }, moderatedBy: string): Promise<any> {
+    return db.transaction(async (trx) => {
+      const [updated] = await trx.update(productReviews).set({
+        status: patch.status, adminReply: patch.adminReply ?? undefined,
+        moderatedAt: new Date(), moderatedBy,
+      }).where(eq(productReviews.id, id)).returning();
+      if (!updated) return null;
+      await this.recalcRatingTx(trx, updated.productId);
+      return updated;
+    });
+  }
+  async deleteReview(id: number): Promise<any> {
+    return db.transaction(async (trx) => {
+      const [row] = await trx.delete(productReviews).where(eq(productReviews.id, id)).returning();
+      if (row) await this.recalcRatingTx(trx, row.productId);
+      return row ?? null;
+    });
+  }
+  /** Confere se o e-mail comprou aquele produto naquele pedido. */
+  async verifyPurchase(orderNumber: string, email: string, productId: number): Promise<boolean> {
+    const rows = await db.select({ id: orders.id }).from(orders)
+      .innerJoin(orderItems, eq(orderItems.orderId, orders.id))
+      .where(and(
+        eq(orders.orderNumber, orderNumber),
+        sql`lower(${orders.customerEmail}) = lower(${email})`,
+        eq(orderItems.productId, productId),
+      )).limit(1);
+    return rows.length > 0;
   }
 
   // ─── Assinaturas ──────────────────────────────────────────────────────────
