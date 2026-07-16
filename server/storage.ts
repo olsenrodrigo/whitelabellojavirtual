@@ -16,7 +16,7 @@ import {
   type StoreSettings,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { eq, desc, asc, like, and, or, sql } from "drizzle-orm";
+import { eq, desc, asc, like, and, or, sql, isNull } from "drizzle-orm";
 import pg from "pg";
 
 // Lazy initialization so DATABASE_URL can be loaded from .env before connection
@@ -368,6 +368,29 @@ export class DatabaseStorage {
   }
   async incrementCouponUsage(id: number): Promise<void> {
     await db.update(coupons).set({ usedCount: sql`${coupons.usedCount} + 1` }).where(eq(coupons.id, id));
+  }
+  /**
+   * Claim ATÔMICO de 1 uso: revalida (ativo, janela de datas, limite, mínimo) e
+   * incrementa na MESMA instrução SQL. O row-lock serializa concorrentes e o
+   * WHERE é reavaliado após o lock (READ COMMITTED) — na corrida do último uso,
+   * só 1 vence. Retorna a linha atualizada, ou null se qualquer condição falhou.
+   */
+  async claimCouponUsage(code: string, subtotal: number): Promise<Coupon | null> {
+    const rows = await db
+      .update(coupons)
+      .set({ usedCount: sql`${coupons.usedCount} + 1` })
+      .where(
+        and(
+          eq(coupons.code, code.toUpperCase()),
+          eq(coupons.active, true),
+          or(isNull(coupons.maxUses), sql`${coupons.usedCount} < ${coupons.maxUses}`),
+          or(isNull(coupons.startsAt), sql`${coupons.startsAt} <= now()`),
+          or(isNull(coupons.expiresAt), sql`${coupons.expiresAt} >= now()`),
+          or(isNull(coupons.minOrderValue), sql`${coupons.minOrderValue} <= ${subtotal}`)
+        )
+      )
+      .returning();
+    return rows[0] ?? null;
   }
 
   // ─── Shipping ─────────────────────────────────────────────────────────────

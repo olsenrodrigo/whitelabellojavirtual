@@ -71,6 +71,24 @@ function Router() {
 }
 
 function App() {
+  // Link com cupom: ?cupom=XYZ (ou ?coupon=) em qualquer rota → guarda pra aplicar
+  // no checkout e limpa a URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("cupom") ?? params.get("coupon");
+    if (code) {
+      try {
+        localStorage.setItem("wl_coupon", code.toUpperCase());
+      } catch {
+        /* ignore */
+      }
+      params.delete("cupom");
+      params.delete("coupon");
+      const qs = params.toString();
+      window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    }
+  }, []);
+
   useEffect(() => {
     fetch("/api/store/settings")
       .then(r => r.json())

@@ -215,6 +215,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { code, orderValue } = req.body;
     const coupon = await storage.getCouponByCode(code);
     if (!coupon || !coupon.active) return res.status(404).json({ message: "Cupom inválido" });
+    if (coupon.startsAt && new Date(coupon.startsAt) > new Date())
+      return res.status(400).json({ message: "Cupom ainda não está válido" });
     if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date())
       return res.status(400).json({ message: "Cupom expirado" });
     if (coupon.maxUses && coupon.usedCount >= coupon.maxUses)
@@ -247,12 +249,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       sum + Number(i.unitPrice) * i.quantity, 0);
     let discountAmount = 0;
 
+    let appliedCouponCode: string | null = null;
     if (data.couponCode) {
-      const coupon = await storage.getCouponByCode(data.couponCode);
-      if (coupon && coupon.active) {
-        if (coupon.type === "percentage") discountAmount = subtotal * Number(coupon.value) / 100;
-        else if (coupon.type === "fixed") discountAmount = Number(coupon.value);
-        await storage.incrementCouponUsage(coupon.id);
+      // Claim ATÔMICO: revalida (ativo/datas/limite/mínimo) E conta o uso numa
+      // única instrução SQL — sem estourar o limite em corrida e sem contar cupom
+      // expirado/esgotado. Se inválido no momento do fechamento, ignora o cupom.
+      const claimed = await storage.claimCouponUsage(data.couponCode, subtotal);
+      if (claimed) {
+        appliedCouponCode = claimed.code;
+        if (claimed.type === "percentage") discountAmount = (subtotal * Number(claimed.value)) / 100;
+        else if (claimed.type === "fixed") discountAmount = Number(claimed.value);
+        discountAmount = Math.min(discountAmount, subtotal); // clamp: nunca > subtotal
       }
     }
 
@@ -288,7 +295,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       shippingAmount: String(shippingAmount),
       total: String(total),
       paymentMethod: data.paymentMethod,
-      couponCode: data.couponCode,
+      couponCode: appliedCouponCode,
       shippingCarrier: data.shippingCarrier,
       shippingService: data.shippingService,
       status: "pending_payment",

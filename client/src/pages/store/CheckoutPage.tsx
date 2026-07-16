@@ -110,24 +110,38 @@ export default function CheckoutPage() {
     }
   };
 
-  const applyCoupon = async () => {
-    if (!couponCode) return;
+  const applyCoupon = async (codeArg?: string, silent = false) => {
+    const code = (codeArg ?? couponCode).trim().toUpperCase();
+    if (!code) return;
+    if (code !== couponCode) setCouponCode(code);
     setCouponLoading(true);
     try {
       const r = await fetch("/api/store/coupon/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: couponCode, orderValue: total }),
+        body: JSON.stringify({ code, orderValue: total }),
       });
       const d = await r.json();
       if (r.ok) {
         setCouponDiscount(d.discount);
+        try { localStorage.removeItem("wl_coupon"); } catch { /* ignore */ }
         toast({ title: "Cupom aplicado!", description: `Desconto: R$ ${d.discount.toFixed(2)}` });
-      } else {
+      } else if (!silent) {
         toast({ title: "Cupom inválido", description: d.message, variant: "destructive" });
       }
     } finally { setCouponLoading(false); }
   };
+
+  // Auto-aplica o cupom carregado por link (?cupom=), guardado no localStorage.
+  const [autoCouponTried, setAutoCouponTried] = useState(false);
+  useEffect(() => {
+    if (autoCouponTried || total <= 0) return;
+    setAutoCouponTried(true);
+    let stored = "";
+    try { stored = localStorage.getItem("wl_coupon") || ""; } catch { /* ignore */ }
+    if (stored) applyCoupon(stored, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [total, autoCouponTried]);
 
   const handlePlaceOrder = async () => {
     setLoading(true);
@@ -376,7 +390,7 @@ export default function CheckoutPage() {
                     <p className="text-sm font-medium text-gray-700 mb-2">Cupom de desconto</p>
                     <div className="flex gap-2">
                       <Input value={couponCode} onChange={e => setCouponCode(e.target.value.toUpperCase())} placeholder="CUPOM10" className="flex-1" />
-                      <Button variant="outline" onClick={applyCoupon} disabled={couponLoading}>Aplicar</Button>
+                      <Button type="button" variant="outline" onClick={() => applyCoupon()} disabled={couponLoading}>Aplicar</Button>
                     </div>
                     {couponDiscount > 0 && <p className="text-sm text-green-600 mt-1">✓ Desconto de R$ {couponDiscount.toFixed(2)} aplicado!</p>}
                   </div>
