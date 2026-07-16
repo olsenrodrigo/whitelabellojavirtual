@@ -17,11 +17,7 @@ import { loadConfig as loadAsaasConfig, isValidWebhookToken, parseWebhookEvent }
 import { loadConfig as loadMpConfig, validateWebhookSignature as validateMpWebhook } from "./mercadopago";
 import { sendOrderConfirmationEmail, sendShippingEmail } from "./notify";
 import { registerShippingRoutes, createLabelForOrder } from "./smartenvios-integration";
-
-/** Gateway de pagamento ativo (env PAYMENT_GATEWAY; default mercadopago). */
-function activePaymentGateway(): string {
-  return (process.env.PAYMENT_GATEWAY || "mercadopago").toLowerCase();
-}
+import { resolvePaymentConfig, methodConfig } from "./gateway/payment-config";
 
 // ─── Multer config ───────────────────────────────────────────────────────────
 const uploadsDir = path.join(process.cwd(), "uploads");
@@ -122,6 +118,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.json(safe);
     }
     return res.json({ storeName: "Loja Virtual", primaryColor: "#5B8C9B" });
+  });
+
+  // Config pública de formas de pagamento (métodos aceitos + gateway/modo do cartão)
+  app.get("/api/payment/config", async (_req, res) => {
+    const s = await storage.getStoreSettings();
+    const cfg = resolvePaymentConfig(s);
+    return res.json({
+      pix: { enabled: cfg.pix.enabled, gateway: cfg.pix.gateway },
+      boleto: { enabled: cfg.boleto.enabled, gateway: cfg.boleto.gateway },
+      credit_card: {
+        enabled: cfg.credit_card.enabled,
+        gateway: cfg.credit_card.gateway,
+        mode: cfg.credit_card.mode ?? "embedded",
+      },
+      // public key do MP para tokenizar cartão embutido no front (não é segredo)
+      mercadoPagoPublicKey: s?.mercadoPagoPublicKey || process.env.MP_PUBLIC_KEY || null,
+    });
   });
 
   // Categories (public)
@@ -246,6 +259,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const shippingAmount = data.shippingAmount || 0;
     const total = subtotal - discountAmount + shippingAmount;
 
+    // Config de pagamento — valida se o método é aceito ANTES de criar o pedido.
+    const settings = await storage.getStoreSettings();
+    const payCfg = resolvePaymentConfig(settings);
+    const mc = methodConfig(payCfg, data.paymentMethod);
+    if (!mc || !mc.enabled) {
+      return res.status(400).json({ message: `Forma de pagamento indisponível: ${data.paymentMethod}` });
+    }
+
     // Create order
     const orderNumber = generateOrderNumber();
     const order = await storage.createOrder({
@@ -292,9 +313,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.decrementStock(item.productId, item.quantity);
     }
 
-    // Process payment — gateway ativo por env PAYMENT_GATEWAY (default mercadopago).
-    const settings = await storage.getStoreSettings();
-    const gatewayId = activePaymentGateway();
+    // Process payment — roteia pelo gateway configurado para o método.
+    const gatewayId = mc.gateway;
 
     let paymentResult: any = { success: true };
     if (gatewayId === "asaas") {
@@ -385,10 +405,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       orderId: order.id,
       total,
       paymentMethod: data.paymentMethod,
+      gateway: gatewayId,
       pixQrCode: paymentResult.pixQrCode,
       pixQrCodeBase64: paymentResult.pixQrCodeBase64,
       boletoUrl: paymentResult.boletoUrl,
       boletoBarcode: paymentResult.boletoBarcode,
+      // Checkout hospedado (ex.: cartão via Asaas): o front redireciona pra cá.
+      redirectUrl: paymentResult.redirectUrl,
+      paymentError: paymentResult.success ? undefined : paymentResult.error,
     });
   });
 

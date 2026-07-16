@@ -45,6 +45,15 @@ export default function AdminSettings() {
 
   const set = (key: string, value: any) => setSettings((s: any) => ({ ...s, [key]: value }));
 
+  // Config de formas de pagamento (roteamento por método)
+  const pc = settings.paymentConfig || {
+    pix: { enabled: true, gateway: "mercadopago" },
+    boleto: { enabled: true, gateway: "mercadopago" },
+    credit_card: { enabled: true, gateway: "mercadopago", mode: "embedded" },
+  };
+  const setPay = (method: string, patch: any) =>
+    set("paymentConfig", { ...pc, [method]: { ...(pc[method] || {}), ...patch } });
+
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-200 border-t-gray-900" /></div>;
 
   return (
@@ -302,11 +311,58 @@ export default function AdminSettings() {
         )}
 
         {activeTab === "payment" && (
-          <div className="space-y-4">
-            <h3 className="font-semibold text-gray-800 mb-2">MercadoPago</h3>
-            <p className="text-sm text-gray-500">Configure suas credenciais do MercadoPago para aceitar PIX, boleto e cartão.</p>
+          <div className="space-y-6">
             <div>
-              <Label>Access Token (SECRET)</Label>
+              <h3 className="font-semibold text-gray-800 mb-1">Formas de pagamento</h3>
+              <p className="text-sm text-gray-500 mb-4">Defina os métodos aceitos, qual gateway processa cada um e — no cartão — onde o cliente paga.</p>
+              <div className="space-y-3">
+                {[
+                  { key: "pix", label: "PIX", card: false },
+                  { key: "boleto", label: "Boleto", card: false },
+                  { key: "credit_card", label: "Cartão de crédito", card: true },
+                ].map((row) => {
+                  const c = (pc as any)[row.key] || {};
+                  return (
+                    <div key={row.key} className="flex flex-wrap items-center gap-3 border rounded-lg p-3">
+                      <label className="flex items-center gap-2 min-w-[160px] cursor-pointer">
+                        <input type="checkbox" checked={!!c.enabled} onChange={(e) => setPay(row.key, { enabled: e.target.checked })} />
+                        <span className="font-medium text-gray-800">{row.label}</span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500">Gateway</span>
+                        <select value={c.gateway || "mercadopago"} disabled={!c.enabled}
+                          onChange={(e) => setPay(row.key, { gateway: e.target.value })}
+                          className="border rounded-md px-2 py-1 text-sm disabled:opacity-50">
+                          <option value="mercadopago">MercadoPago</option>
+                          <option value="asaas">Asaas</option>
+                        </select>
+                      </div>
+                      {row.card && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500">Onde paga</span>
+                          <select value={c.mode || "embedded"} disabled={!c.enabled}
+                            onChange={(e) => setPay(row.key, { mode: e.target.value })}
+                            className="border rounded-md px-2 py-1 text-sm disabled:opacity-50">
+                            <option value="embedded">Embutido no site</option>
+                            <option value="redirect">Redirect (página do gateway)</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                Combinações suportadas hoje: <b>cartão via MercadoPago</b> = embutido; <b>cartão via Asaas</b> = redirect (checkout hospedado). PIX e boleto aparecem no site.
+                Credenciais do <b>Asaas</b> vêm do <code>.env</code> (ASAAS_API_KEY); as do MercadoPago abaixo (ou no <code>.env</code>).
+              </div>
+            </div>
+
+            <div className="border-t pt-4 space-y-4">
+              <h3 className="font-semibold text-gray-800 mb-2">MercadoPago</h3>
+              <p className="text-sm text-gray-500">Configure suas credenciais do MercadoPago para aceitar PIX, boleto e cartão.</p>
+              <div>
+                <Label>Access Token (SECRET)</Label>
               <Input type="password" value={settings.mercadoPagoToken || ""} onChange={e => set("mercadoPagoToken", e.target.value)} placeholder="APP_USR-..." className="mt-1" />
             </div>
             <div>
@@ -331,6 +387,7 @@ export default function AdminSettings() {
                 <Input type="number" value={settings.monthlyInterestRate ? Number(settings.monthlyInterestRate) * 100 : 1.99}
                   onChange={e => set("monthlyInterestRate", (Number(e.target.value) / 100).toFixed(4))} step="0.01" className="mt-1" />
               </div>
+            </div>
             </div>
           </div>
         )}

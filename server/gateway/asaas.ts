@@ -1,10 +1,10 @@
 // Provider de pagamento Asaas — implementa a interface PaymentGateway do app
 // reutilizando o conector portável em `server/asaas/`.
 //
-// Suporta PIX e boleto de forma completa. Cartão NÃO é suportado por este
-// checkout: o front tokeniza o cartão com o SDK do MercadoPago (`cardToken`),
-// que não é válido no Asaas — cartão via Asaas exigiria tokenização Asaas no
-// front. Para cartão, mantenha o gateway MercadoPago.
+// PIX e boleto: dados exibidos no site (QR / linha digitável).
+// Cartão: checkout HOSPEDADO — a cobrança gera uma invoiceUrl (redirectUrl) e o
+// cliente paga o cartão na página do Asaas (o cartão não passa pelo servidor).
+// O Asaas não tem tokenização client-side por chave pública (como o MP.js).
 import type { PaymentGateway, PaymentRequest, PaymentResponse } from "./types";
 import {
   loadConfig,
@@ -57,9 +57,6 @@ export const asaasGateway: PaymentGateway = {
     if (!billingType) {
       return { success: false, error: `Método não suportado pelo Asaas: ${request.method}` };
     }
-    if (billingType === "CREDIT_CARD") {
-      return { success: false, error: "Cartão via Asaas requer tokenização Asaas — use PIX ou boleto." };
-    }
 
     try {
       const customer = await ensureCustomer(cfg, {
@@ -100,6 +97,9 @@ export const asaasGateway: PaymentGateway = {
         } catch {
           /* linha digitável pode não estar pronta imediatamente — não bloqueia */
         }
+      } else if (billingType === "CREDIT_CARD") {
+        // Checkout hospedado: o cliente paga o cartão na página do Asaas (invoiceUrl).
+        out.redirectUrl = payment.invoiceUrl;
       }
       return out;
     } catch (err: any) {

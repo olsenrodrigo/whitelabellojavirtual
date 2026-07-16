@@ -33,13 +33,24 @@ export default function CheckoutPage() {
   const [shipOptions, setShipOptions] = useState<any[] | null>(null);
   const [shipLoading, setShipLoading] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<"pix" | "boleto" | "credit_card">("pix");
+  const [payConfig, setPayConfig] = useState<Record<string, { enabled: boolean; gateway: string; mode?: string }> | null>(null);
   const [couponCode, setCouponCode] = useState("");
   const [couponDiscount, setCouponDiscount] = useState(0);
   const [couponLoading, setCouponLoading] = useState(false);
 
   useEffect(() => {
     fetch("/api/store/settings").then(r => r.json()).then(setStoreInfo).catch(() => {});
+    fetch("/api/payment/config").then(r => r.json()).then(setPayConfig).catch(() => {});
   }, []);
+
+  // Seleciona o primeiro método habilitado quando a config de pagamento carrega.
+  useEffect(() => {
+    if (!payConfig) return;
+    if (!payConfig[paymentMethod]?.enabled) {
+      const first = (["pix", "boleto", "credit_card"] as const).find((m) => payConfig[m]?.enabled);
+      if (first) setPaymentMethod(first);
+    }
+  }, [payConfig]);
 
   useEffect(() => {
     if (!cart || cart.items.length === 0) navigate("/loja/carrinho");
@@ -140,6 +151,8 @@ export default function CheckoutPage() {
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.message || "Erro ao finalizar pedido");
+      // Checkout hospedado (ex.: cartão via Asaas): redireciona pro gateway.
+      if (d.redirectUrl) { window.location.href = d.redirectUrl; return; }
       navigate(`/loja/pedido/${d.orderNumber}`);
     } catch (e: any) {
       toast({ title: "Erro", description: e.message, variant: "destructive" });
@@ -341,7 +354,7 @@ export default function CheckoutPage() {
                       { method: "pix" as const, icon: <Smartphone size={18} />, label: "PIX", desc: `R$ ${pixTotal.toFixed(2).replace(".", ",")} — 5% de desconto`, badge: "Aprovação instantânea" },
                       { method: "boleto" as const, icon: <FileText size={18} />, label: "Boleto Bancário", desc: `R$ ${orderTotal.toFixed(2).replace(".", ",")} — vence em 3 dias`, badge: null },
                       { method: "credit_card" as const, icon: <CreditCard size={18} />, label: "Cartão de Crédito", desc: `Até 12x`, badge: null },
-                    ].map(opt => (
+                    ].filter(opt => !payConfig || payConfig[opt.method]?.enabled).map(opt => (
                       <label key={opt.method} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${paymentMethod === opt.method ? "border-2" : "border-gray-200 hover:border-gray-300"}`}
                         style={paymentMethod === opt.method ? { borderColor: primaryColor, background: `${primaryColor}10` } : {}}>
                         <input type="radio" name="payment" value={opt.method} checked={paymentMethod === opt.method}

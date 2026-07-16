@@ -37,6 +37,26 @@ export type InsertAdminUser = z.infer<typeof insertAdminUserSchema>;
 export type AdminUser = typeof adminUsers.$inferSelect;
 
 // ─── Store Settings ───────────────────────────────────────────────────────────
+// ─── Config de formas de pagamento (roteamento por método) ───────────────────
+export type PaymentMethodKey = "pix" | "boleto" | "credit_card";
+export type PaymentGatewayId = "asaas" | "mercadopago";
+export type PaymentCardMode = "embedded" | "redirect";
+export interface PaymentMethodConfig {
+  enabled: boolean;
+  gateway: PaymentGatewayId;
+  mode?: PaymentCardMode; // relevante só para cartão (embutido x redirect)
+}
+export interface PaymentConfig {
+  pix: PaymentMethodConfig;
+  boleto: PaymentMethodConfig;
+  credit_card: PaymentMethodConfig;
+}
+export const DEFAULT_PAYMENT_CONFIG: PaymentConfig = {
+  pix: { enabled: true, gateway: "mercadopago" },
+  boleto: { enabled: true, gateway: "mercadopago" },
+  credit_card: { enabled: true, gateway: "mercadopago", mode: "embedded" },
+};
+
 export const storeSettings = pgTable("store_settings", {
   id: serial("id").primaryKey(),
   storeName: text("store_name").notNull().default("Minha Loja"),
@@ -53,6 +73,7 @@ export const storeSettings = pgTable("store_settings", {
   pixKey: text("pix_key"),
   mercadoPagoToken: text("mercado_pago_token"),
   mercadoPagoPublicKey: text("mercado_pago_public_key"),
+  paymentConfig: jsonb("payment_config").$type<PaymentConfig>(),
   smtpHost: text("smtp_host"),
   smtpPort: integer("smtp_port"),
   smtpUser: text("smtp_user"),
