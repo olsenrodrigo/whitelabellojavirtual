@@ -283,6 +283,8 @@ export const cartItems = pgTable("cart_items", {
   variantId: integer("variant_id"),
   quantity: integer("quantity").notNull().default(1),
   unitPrice: decimal("unit_price", { precision: 10, scale: 2 }).notNull(),
+  bundleGroupId: text("bundle_group_id"), // agrupa itens de um mesmo kit adicionado
+  bundleLabel: text("bundle_label"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -348,6 +350,7 @@ export const orderItems = pgTable("order_items", {
   unitPrice: decimal("unit_price", { precision: 10, scale: 2 }).notNull(),
   totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull(),
   imageUrl: text("image_url"),
+  bundleLabel: text("bundle_label"), // nome do kit de origem (snapshot)
 });
 
 // ─── Histórico de Status ──────────────────────────────────────────────────────
@@ -420,6 +423,39 @@ export const productReviews = pgTable("product_reviews", {
   moderatedBy: text("moderated_by"),
 });
 export type ProductReview = typeof productReviews.$inferSelect;
+
+// ─── Cross-sell / Kits ─────────────────────────────────────────────────────────
+export const productRelations = pgTable("product_relations", {
+  id: serial("id").primaryKey(),
+  productId: integer("product_id").notNull(),
+  relatedProductId: integer("related_product_id").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+export const bundles = pgTable("bundles", {
+  id: serial("id").primaryKey(),
+  slug: text("slug").notNull().unique(),
+  name: text("name").notNull(),
+  description: text("description"),
+  image: text("image"),
+  discountType: text("discount_type").notNull().default("percentage"), // percentage | fixed | fixed_price
+  discountValue: decimal("discount_value", { precision: 10, scale: 2 }).notNull(),
+  active: boolean("active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const bundleItems = pgTable("bundle_items", {
+  id: serial("id").primaryKey(),
+  bundleId: integer("bundle_id").notNull(),
+  productId: integer("product_id").notNull(),
+  variantId: integer("variant_id"), // variante tem preço próprio
+  quantity: integer("quantity").notNull().default(1),
+});
+
+export type Bundle = typeof bundles.$inferSelect;
+export type BundleItem = typeof bundleItems.$inferSelect;
 
 // ─── Assinaturas ("assine e receba") ──────────────────────────────────────────
 // Espelho local da assinatura recorrente do Asaas, com snapshot dos itens e do

@@ -248,8 +248,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({ ok: true, status: requireModeration ? "pending" : "approved", verifiedPurchase: verified });
   });
 
+  // ─── Kits (compre junto) ───────────────────────────────────────────────────
+  app.get("/api/store/bundles", async (_req, res) => {
+    res.set("Cache-Control", "public, max-age=120");
+    return res.json(await storage.listActiveBundles());
+  });
+  app.get("/api/store/products/:slug/related", async (req, res) => {
+    const product = await storage.getProductBySlug(req.params.slug);
+    if (!product) return res.status(404).json({ message: "Produto não encontrado" });
+    const [related, bundles] = await Promise.all([
+      storage.getRelatedProducts(product.id),
+      storage.listBundlesForProduct(product.id),
+    ]);
+    return res.json({ related, bundles });
+  });
+
   // Cart
   app.get("/api/cart/:sessionId", async (req, res) => {
+    const cart = await storage.getOrCreateCart(req.params.sessionId);
+    return res.json(cart);
+  });
+
+  // Adiciona um kit ao carrinho (expande em itens com preço já descontado).
+  app.post("/api/cart/:sessionId/add-bundle", async (req, res) => {
+    const slug = typeof req.body?.slug === "string" ? req.body.slug : "";
+    const quantity = Number(req.body?.quantity) || 1;
+    if (!slug) return res.status(400).json({ message: "Kit inválido" });
+    const result = await storage.addBundleToCart(req.params.sessionId, slug, quantity);
+    if (!result.ok) return res.status(422).json({ message: result.error });
     const cart = await storage.getOrCreateCart(req.params.sessionId);
     return res.json(cart);
   });
@@ -427,6 +453,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       unitPrice: String(i.unitPrice),
       totalPrice: String(Number(i.unitPrice) * i.quantity),
       imageUrl: i.mainImage,
+      bundleLabel: i.bundleLabel ?? null,
     }));
     await storage.createOrderItems(orderItemsData);
 
@@ -1513,6 +1540,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/admin/reviews/:id", requireAdmin, async (req, res) => {
     const row = await storage.deleteReview(Number(req.params.id));
     if (!row) return res.status(404).json({ message: "Avaliação não encontrada" });
+    return res.status(204).send();
+  });
+
+  // ─ Kits admin ──────────────────────────────────────────────────────────────
+  const bundleSchema = z.object({
+    slug: z.string().min(1).max(80),
+    name: z.string().min(1).max(120),
+    description: z.string().max(500).nullable().optional(),
+    image: z.string().nullable().optional(),
+    discountType: z.enum(["percentage", "fixed", "fixed_price"]),
+    discountValue: z.coerce.number().finite().nonnegative().max(999999),
+    active: z.boolean().optional(),
+    items: z.array(z.object({
+      productId: z.number().int().positive(),
+      variantId: z.number().int().positive().nullable().optional(),
+      quantity: z.number().int().positive().max(20),
+    })).min(1),
+  });
+  app.get("/api/admin/bundles", requireAdmin, async (_req, res) => {
+    return res.json(await storage.listAllBundlesAdmin());
+  });
+  app.post("/api/admin/bundles", requireAdmin, async (req, res) => {
+    const parsed = bundleSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Dados inválidos" });
+    const { items, ...data } = parsed.data;
+    try {
+      const b = await storage.createBundleWithItems({ ...data, discountValue: String(data.discountValue) }, items);
+      return res.status(201).json(b);
+    } catch (err: any) {
+      if (err?.code === "23505") return res.status(409).json({ message: "Já existe um kit com este slug" });
+      throw err;
+    }
+  });
+  app.put("/api/admin/bundles/:id", requireAdmin, async (req, res) => {
+    const parsed = bundleSchema.partial().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Dados inválidos" });
+    const { items, ...data } = parsed.data;
+    const patch: Record<string, unknown> = { ...data };
+    if (data.discountValue != null) patch.discountValue = String(data.discountValue);
+    try {
+      const b = await storage.updateBundleWithItems(Number(req.params.id), patch, items);
+      if (!b) return res.status(404).json({ message: "Kit não encontrado" });
+      return res.json(b);
+    } catch (err: any) {
+      if (err?.code === "23505") return res.status(409).json({ message: "Já existe um kit com este slug" });
+      throw err;
+    }
+  });
+  app.delete("/api/admin/bundles/:id", requireAdmin, async (req, res) => {
+    const b = await storage.deleteBundle(Number(req.params.id));
+    if (!b) return res.status(404).json({ message: "Kit não encontrado" });
     return res.status(204).send();
   });
 

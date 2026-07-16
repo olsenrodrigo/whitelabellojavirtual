@@ -7,6 +7,7 @@ import { useCart } from "@/context/CartContext";
 import { useToast } from "@/hooks/use-toast";
 import { trackViewItem, trackAddToCart, useAnalyticsReady } from "@/lib/analytics";
 import ReviewsSection from "@/components/store/ReviewsSection";
+import BundleOffer, { type ApiBundle } from "@/components/store/BundleOffer";
 
 interface ProductImage { id: number; url: string; altText?: string; isMain: boolean; position: number; }
 interface Variant { id: number; sku?: string; price: string; compareAtPrice?: string; stockQuantity: number; option1?: string; option2?: string; option3?: string; imageUrl?: string; active: boolean; }
@@ -28,6 +29,7 @@ export default function ProductDetailPage() {
   const { addToCart, loading: cartLoading } = useCart();
   const { toast } = useToast();
   const analyticsOn = useAnalyticsReady();
+  const [apiBundles, setApiBundles] = useState<ApiBundle[]>([]);
 
   useEffect(() => {
     fetch("/api/store/settings").then(r => r.json()).then(setStoreInfo).catch(() => {});
@@ -36,6 +38,10 @@ export default function ProductDetailPage() {
       .then(data => { setProduct(data); if (data.variants?.[0]) setSelectedVariant(data.variants[0]); })
       .catch(() => {})
       .finally(() => setLoading(false));
+    fetch(`/api/store/products/${slug}/related`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => setApiBundles(d?.bundles ?? []))
+      .catch(() => setApiBundles([]));
   }, [slug]);
 
   // Analytics: view_item ao abrir a página (reemite se o consentimento chegar depois)
@@ -218,6 +224,13 @@ export default function ProductDetailPage() {
               <h2 className="text-lg font-semibold text-gray-800 my-4">Descrição</h2>
               <div className="prose prose-sm max-w-none text-gray-600"
                 dangerouslySetInnerHTML={{ __html: product.description }} />
+            </div>
+          )}
+
+          {/* Kits (compre junto) */}
+          {apiBundles.length > 0 && (
+            <div className="px-6">
+              {apiBundles.map((b) => <BundleOffer key={b.id} bundle={b} primaryColor={primaryColor} />)}
             </div>
           )}
 

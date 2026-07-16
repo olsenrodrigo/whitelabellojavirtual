@@ -2,7 +2,8 @@ import {
   contactMessages, adminUsers, categories, products, productImages,
   variants, customers, addresses, cartSessions, cartItems, orders,
   orderItems, orderStatusHistory, paymentTransactions, coupons, subscriptions,
-  productReviews, shippingZones, shippingRates, storeSettings,
+  productReviews, productRelations, bundles, bundleItems,
+  shippingZones, shippingRates, storeSettings,
   type Subscription, type InsertSubscription,
   type ContactMessage, type InsertContactMessage,
   type AdminUser, type InsertAdminUser,
@@ -17,7 +18,9 @@ import {
   type StoreSettings,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { eq, desc, asc, like, and, or, sql, isNull } from "drizzle-orm";
+import { eq, desc, asc, like, and, or, sql, isNull, inArray } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { priceBundle, type BundleDiscountType } from "@shared/bundle-pricing";
 import pg from "pg";
 
 // Lazy initialization so DATABASE_URL can be loaded from .env before connection
@@ -220,6 +223,7 @@ export class DatabaseStorage {
       id: cartItems.id, cartId: cartItems.cartId,
       productId: cartItems.productId, variantId: cartItems.variantId,
       quantity: cartItems.quantity, unitPrice: cartItems.unitPrice,
+      bundleGroupId: cartItems.bundleGroupId, bundleLabel: cartItems.bundleLabel,
       productTitle: products.title, productSlug: products.slug,
       mainImage: sql<string>`(SELECT url FROM product_images WHERE product_id = ${cartItems.productId} AND is_main = true LIMIT 1)`,
     }).from(cartItems)
@@ -571,6 +575,123 @@ export class DatabaseStorage {
         eq(orderItems.productId, productId),
       )).limit(1);
     return rows.length > 0;
+  }
+
+  // ─── Cross-sell / Kits ─────────────────────────────────────────────────────
+  private async bundleComponents(bundleId: number): Promise<any[]> {
+    const items = await db.select().from(bundleItems).where(eq(bundleItems.bundleId, bundleId));
+    if (!items.length) return [];
+    const prods = await db.select().from(products).where(inArray(products.id, items.map((i) => i.productId)));
+    const byId = new Map(prods.map((p) => [p.id, p]));
+    const varIds = items.filter((i) => i.variantId).map((i) => i.variantId as number);
+    const varById = new Map<number, any>();
+    if (varIds.length) {
+      const vs = await db.select().from(variants).where(inArray(variants.id, varIds));
+      vs.forEach((v) => varById.set(v.id, v));
+    }
+    return items.map((it) => {
+      const p = byId.get(it.productId);
+      if (!p) return { productId: it.productId, variantId: it.variantId ?? null, productSlug: "", productTitle: "(indisponível)", image: null, active: false, unitPrice: 0, quantity: it.quantity };
+      const v = it.variantId ? varById.get(it.variantId) : null;
+      const active = p.status === "active" && (!it.variantId || (v && v.active));
+      return {
+        productId: p.id, variantId: it.variantId ?? null, productSlug: p.slug, productTitle: p.title,
+        image: null, active: !!active, unitPrice: Number(v ? v.price : p.price), quantity: it.quantity,
+      };
+    });
+  }
+  private async enrichBundle(b: any) { return { ...b, components: await this.bundleComponents(b.id) }; }
+
+  async listActiveBundles(): Promise<any[]> {
+    const rows = await db.select().from(bundles).where(eq(bundles.active, true)).orderBy(bundles.sortOrder);
+    const enriched = await Promise.all(rows.map((b) => this.enrichBundle(b)));
+    return enriched.filter((b) => b.components.length > 0 && b.components.every((c: any) => c.active));
+  }
+  async listAllBundlesAdmin(): Promise<any[]> {
+    const rows = await db.select().from(bundles).orderBy(desc(bundles.createdAt));
+    return Promise.all(rows.map((b) => this.enrichBundle(b)));
+  }
+  async getBundleBySlug(slug: string): Promise<any> {
+    const [b] = await db.select().from(bundles).where(eq(bundles.slug, slug));
+    return b ? this.enrichBundle(b) : null;
+  }
+  async listBundlesForProduct(productId: number): Promise<any[]> {
+    const links = await db.select({ bundleId: bundleItems.bundleId }).from(bundleItems).where(eq(bundleItems.productId, productId));
+    if (!links.length) return [];
+    const ids = Array.from(new Set(links.map((l) => l.bundleId)));
+    const rows = await db.select().from(bundles).where(and(inArray(bundles.id, ids), eq(bundles.active, true)));
+    const enriched = await Promise.all(rows.map((b) => this.enrichBundle(b)));
+    return enriched.filter((b) => b.components.length > 0 && b.components.every((c: any) => c.active));
+  }
+  async createBundleWithItems(data: any, items: Array<{ productId: number; variantId?: number | null; quantity: number }>): Promise<any> {
+    return db.transaction(async (trx) => {
+      const [b] = await trx.insert(bundles).values(data).returning();
+      if (items.length) await trx.insert(bundleItems).values(items.map((it) => ({ bundleId: b.id, productId: it.productId, variantId: it.variantId ?? null, quantity: it.quantity })));
+      return b;
+    });
+  }
+  async updateBundleWithItems(id: number, data: any, items?: Array<{ productId: number; variantId?: number | null; quantity: number }>): Promise<any> {
+    return db.transaction(async (trx) => {
+      const [b] = await trx.update(bundles).set({ ...data, updatedAt: new Date() }).where(eq(bundles.id, id)).returning();
+      if (!b) return null;
+      if (items) {
+        await trx.delete(bundleItems).where(eq(bundleItems.bundleId, id));
+        if (items.length) await trx.insert(bundleItems).values(items.map((it) => ({ bundleId: id, productId: it.productId, variantId: it.variantId ?? null, quantity: it.quantity })));
+      }
+      return b;
+    });
+  }
+  async deleteBundle(id: number): Promise<any> {
+    return db.transaction(async (trx) => {
+      await trx.delete(bundleItems).where(eq(bundleItems.bundleId, id));
+      const [b] = await trx.delete(bundles).where(eq(bundles.id, id)).returning();
+      return b ?? null;
+    });
+  }
+  async getRelatedProducts(productId: number): Promise<any[]> {
+    const links = await db.select().from(productRelations).where(eq(productRelations.productId, productId)).orderBy(productRelations.sortOrder);
+    if (!links.length) return [];
+    const ids = links.map((l) => l.relatedProductId);
+    const prods = await db.select().from(products).where(and(inArray(products.id, ids), eq(products.status, "active")));
+    const byId = new Map(prods.map((p) => [p.id, p]));
+    return links.map((l) => byId.get(l.relatedProductId)).filter(Boolean);
+  }
+  async setRelatedProducts(productId: number, relatedIds: number[]): Promise<void> {
+    await db.transaction(async (trx) => {
+      await trx.delete(productRelations).where(eq(productRelations.productId, productId));
+      const clean = relatedIds.filter((id) => id !== productId);
+      if (clean.length) await trx.insert(productRelations).values(clean.map((rid, i) => ({ productId, relatedProductId: rid, sortOrder: i })));
+    });
+  }
+
+  /**
+   * Expande um kit em cart_items com preços JÁ descontados (pro-rata) e um
+   * bundleGroupId comum. Preço vem do catálogo — nunca do cliente. Rejeita se o
+   * kit estiver inativo ou tiver componente indisponível.
+   */
+  async addBundleToCart(sessionId: string, slug: string, quantity: number): Promise<{ ok: boolean; error?: string }> {
+    const bundle = await this.getBundleBySlug(slug);
+    if (!bundle || !bundle.active) return { ok: false, error: "Kit indisponível" };
+    if (bundle.components.length === 0 || bundle.components.some((c: any) => !c.active)) return { ok: false, error: "Kit indisponível" };
+    const qty = Math.max(1, Math.min(20, quantity));
+    const pricing = priceBundle(
+      bundle.discountType as BundleDiscountType,
+      Number(bundle.discountValue),
+      bundle.components.map((c: any) => ({ productSlug: c.productSlug, unitPrice: c.unitPrice, quantity: c.quantity }))
+    );
+    const cart = await this.getOrCreateCart(sessionId);
+    const groupId = randomUUID();
+    for (let i = 0; i < pricing.components.length; i++) {
+      const comp = pricing.components[i];
+      const src = bundle.components[i];
+      await db.insert(cartItems).values({
+        cartId: cart.id, productId: src.productId, variantId: src.variantId ?? null,
+        quantity: comp.quantity * qty, unitPrice: comp.unitPrice.toFixed(2),
+        bundleGroupId: groupId, bundleLabel: bundle.name,
+      });
+    }
+    await db.update(cartSessions).set({ updatedAt: new Date() }).where(eq(cartSessions.id, cart.id));
+    return { ok: true };
   }
 
   // ─── Assinaturas ──────────────────────────────────────────────────────────

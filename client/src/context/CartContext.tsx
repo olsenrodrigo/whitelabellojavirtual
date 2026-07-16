@@ -23,6 +23,7 @@ interface CartContextType {
   sessionId: string;
   loading: boolean;
   addToCart: (productId: number, variantId: number | null, quantity: number) => Promise<void>;
+  addBundle: (slug: string, quantity: number) => Promise<boolean>;
   updateItem: (itemId: number, quantity: number) => Promise<void>;
   clearCart: () => Promise<void>;
   itemCount: number;
@@ -83,6 +84,21 @@ export function CartProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const addBundle = async (slug: string, quantity: number): Promise<boolean> => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/cart/${sessionId}/add-bundle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, quantity }),
+      });
+      if (res.ok) { setCart(await res.json()); return true; }
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const updateItem = async (itemId: number, quantity: number) => {
     await fetch(`/api/cart/item/${itemId}`, {
       method: "PUT",
@@ -101,7 +117,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const total = cart?.items?.reduce((s, i) => s + Number(i.unitPrice) * i.quantity, 0) ?? 0;
 
   return (
-    <CartContext.Provider value={{ cart, sessionId, loading, addToCart, updateItem, clearCart, itemCount, total, refresh }}>
+    <CartContext.Provider value={{ cart, sessionId, loading, addToCart, addBundle, updateItem, clearCart, itemCount, total, refresh }}>
       {children}
     </CartContext.Provider>
   );
