@@ -83,6 +83,15 @@ app.use((req, res, next) => {
 (async () => {
   await registerRoutes(httpServer, app);
 
+  // Expurgo LGPD do contato de carrinhos abandonados (retenção 30 dias): boot + diário.
+  const { storage: _storage } = await import("./storage");
+  const purgeCarts = () =>
+    _storage.purgeExpiredCartContacts(30).catch((e: any) =>
+      console.error("[carts] ALERTA: expurgo LGPD de carrinhos falhou:", e?.message)
+    );
+  purgeCarts();
+  setInterval(purgeCarts, 24 * 60 * 60 * 1000).unref();
+
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";

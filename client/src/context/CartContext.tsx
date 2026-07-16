@@ -42,9 +42,23 @@ function getSessionId(): string {
 }
 
 export function CartProvider({ children }: { children: ReactNode }) {
-  const [sessionId] = useState(getSessionId);
+  const [sessionId, setSessionId] = useState(getSessionId);
   const [cart, setCart] = useState<Cart | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Recuperação de carrinho abandonado: ?recover=<sessionId> adota a sessão
+  // (o carrinho já existe no servidor sob esse id) e limpa a URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const recover = params.get("recover");
+    if (recover && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(recover)) {
+      try { localStorage.setItem("cart_session_id", recover); } catch { /* ignore */ }
+      setSessionId(recover);
+      params.delete("recover");
+      const qs = params.toString();
+      window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     try {

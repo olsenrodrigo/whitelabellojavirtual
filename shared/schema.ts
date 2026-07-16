@@ -91,6 +91,8 @@ export const storeSettings = pgTable("store_settings", {
   mercadoPagoPublicKey: text("mercado_pago_public_key"),
   paymentConfig: jsonb("payment_config").$type<PaymentConfig>(),
   analyticsConfig: jsonb("analytics_config").$type<AnalyticsConfig>(),
+  // Mensagem de recuperação de carrinho (placeholders: {nome} {itens} {link} {cupom})
+  abandonedMessageTemplate: text("abandoned_message_template"),
   smtpHost: text("smtp_host"),
   smtpPort: integer("smtp_port"),
   smtpUser: text("smtp_user"),
@@ -252,9 +254,19 @@ export type Address = typeof addresses.$inferSelect;
 // ─── Carrinhos ────────────────────────────────────────────────────────────────
 export const cartSessions = pgTable("cart_sessions", {
   id: serial("id").primaryKey(),
-  sessionId: text("session_id").notNull().unique(),
+  sessionId: text("session_id").notNull().unique(), // uuid v4 = capability do carrinho
   customerId: integer("customer_id"),
   couponCode: text("coupon_code"),
+  // Recuperação de carrinho abandonado (contato capturado só com consentimento)
+  customerName: text("customer_name"),
+  customerPhone: text("customer_phone"),
+  customerEmail: text("customer_email"),
+  consentAt: timestamp("consent_at"), // LGPD: contato só é usado se houver consentimento
+  recoveryStatus: text("recovery_status").notNull().default("open"), // open | contacted | converted
+  contactCount: integer("contact_count").notNull().default(0),
+  contactedAt: timestamp("contacted_at"),
+  recoveryCouponCode: text("recovery_coupon_code"),
+  recoveredOrderId: integer("recovered_order_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

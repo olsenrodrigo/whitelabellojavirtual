@@ -133,6 +133,19 @@ export default function AdminSettings() {
               <Label>CNPJ</Label>
               <Input value={settings.cnpj || ""} onChange={e => set("cnpj", e.target.value)} placeholder="00.000.000/0001-00" className="mt-1" />
             </div>
+            <div>
+              <Label>Mensagem de recuperação de carrinho</Label>
+              <Textarea
+                value={settings.abandonedMessageTemplate || ""}
+                onChange={e => set("abandonedMessageTemplate", e.target.value)}
+                rows={4}
+                className="mt-1 font-mono text-sm"
+                placeholder={"Oi {nome}! 👋 Vi que você deixou itens no carrinho:\n\n{itens}\n\nPosso te ajudar a finalizar? {link}{cupom}"}
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                Placeholders: {"{nome}"} {"{itens}"} {"{link}"} {"{cupom}"}. Em branco usa o texto padrão.
+              </p>
+            </div>
           </div>
         )}
 

@@ -253,6 +253,93 @@ export class DatabaseStorage {
     }
   }
 
+  // ─── Recuperação de carrinho abandonado ────────────────────────────────────
+  /** Captura/atualiza contato do carrinho (só com consentimento). Não reabre convertido. */
+  async updateCartContact(sessionId: string, data: { name?: string | null; phone: string; email?: string | null; couponCode?: string | null }): Promise<void> {
+    const [cart] = await db.select().from(cartSessions).where(eq(cartSessions.sessionId, sessionId));
+    if (!cart) return;
+    if (cart.recoveryStatus === "converted") return;
+    await db.update(cartSessions).set({
+      customerName: data.name ?? null,
+      customerPhone: data.phone,
+      customerEmail: data.email ?? null,
+      couponCode: data.couponCode ?? cart.couponCode,
+      consentAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(cartSessions.id, cart.id));
+  }
+
+  async getCartSessionById(id: number): Promise<any> {
+    const [row] = await db.select().from(cartSessions).where(eq(cartSessions.id, id));
+    return row;
+  }
+
+  /** Lista carrinhos abandonados (contato capturado) com itens agregados. */
+  async listAbandonedCarts(opts: { status?: string; minAgeHours?: number; maxAgeDays?: number } = {}): Promise<any[]> {
+    const conds = [sql`${cartSessions.consentAt} IS NOT NULL`];
+    if (opts.status) conds.push(eq(cartSessions.recoveryStatus, opts.status));
+    if (opts.minAgeHours && opts.minAgeHours > 0)
+      conds.push(sql`${cartSessions.updatedAt} <= now() - (${opts.minAgeHours} * interval '1 hour')`);
+    if (opts.maxAgeDays && opts.maxAgeDays > 0)
+      conds.push(sql`${cartSessions.updatedAt} >= now() - (${opts.maxAgeDays} * interval '1 day')`);
+    const sessions = await db.select().from(cartSessions)
+      .where(and(...conds)).orderBy(desc(cartSessions.updatedAt));
+    const result: any[] = [];
+    for (const s of sessions) {
+      const items = await db.select({
+        productTitle: products.title, quantity: cartItems.quantity, unitPrice: cartItems.unitPrice,
+      }).from(cartItems).leftJoin(products, eq(cartItems.productId, products.id))
+        .where(eq(cartItems.cartId, s.id));
+      const subtotal = items.reduce((t, i) => t + Number(i.unitPrice) * i.quantity, 0);
+      result.push({ ...s, items, itemCount: items.reduce((t, i) => t + i.quantity, 0), subtotal });
+    }
+    return result;
+  }
+
+  /** Registra um contato de recuperação (atômico; só se não convertido). */
+  async registerCartContact(id: number, couponCode?: string | null): Promise<any> {
+    const [row] = await db.update(cartSessions).set({
+      recoveryStatus: "contacted",
+      contactCount: sql`${cartSessions.contactCount} + 1`,
+      contactedAt: new Date(),
+      recoveryCouponCode: couponCode ?? null,
+      updatedAt: new Date(),
+    }).where(and(eq(cartSessions.id, id), sql`${cartSessions.recoveryStatus} <> 'converted'`)).returning();
+    return row ?? null;
+  }
+
+  /** Marca convertido — só se o telefone bater e ainda não convertido. */
+  async markCartConverted(sessionId: string, orderId: number, phoneDigits: string): Promise<void> {
+    await db.update(cartSessions).set({ recoveryStatus: "converted", recoveredOrderId: orderId, updatedAt: new Date() })
+      .where(and(
+        eq(cartSessions.sessionId, sessionId),
+        sql`${cartSessions.recoveryStatus} <> 'converted'`,
+        sql`regexp_replace(coalesce(${cartSessions.customerPhone}, ''), '[^0-9]', '', 'g') = ${phoneDigits}`,
+      ));
+  }
+
+  /** PATCH de status — nunca sai de converted (estado final). */
+  async updateCartRecoveryStatus(id: number, status: string): Promise<any> {
+    const [row] = await db.update(cartSessions).set({ recoveryStatus: status, updatedAt: new Date() })
+      .where(and(eq(cartSessions.id, id), sql`${cartSessions.recoveryStatus} <> 'converted'`)).returning();
+    return row ?? null;
+  }
+
+  /** Revogação LGPD: limpa o contato do carrinho pelo sessionId (capability). */
+  async revokeCartContact(sessionId: string): Promise<void> {
+    await db.update(cartSessions).set({
+      customerName: null, customerPhone: null, customerEmail: null,
+      consentAt: null, recoveryStatus: "open", updatedAt: new Date(),
+    }).where(eq(cartSessions.sessionId, sessionId));
+  }
+
+  /** Expurgo LGPD: limpa o contato (PII) de carrinhos consentidos há mais de N dias. */
+  async purgeExpiredCartContacts(days: number): Promise<void> {
+    await db.update(cartSessions).set({
+      customerName: null, customerPhone: null, customerEmail: null, consentAt: null,
+    }).where(sql`${cartSessions.consentAt} IS NOT NULL AND ${cartSessions.consentAt} < now() - (${days} * interval '1 day')`);
+  }
+
   // ─── Customers ────────────────────────────────────────────────────────────
   async getCustomerByEmail(email: string): Promise<Customer | undefined> {
     const [result] = await db.select().from(customers).where(eq(customers.email, email));

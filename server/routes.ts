@@ -214,6 +214,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({ success: true });
   });
 
+  // ─── Recuperação de carrinho abandonado (captura consent-gated) ─────────────
+  const cartHits = new Map<string, { count: number; resetAt: number }>();
+  setInterval(() => {
+    const now = Date.now();
+    cartHits.forEach((v, k) => { if (now > v.resetAt) cartHits.delete(k); });
+  }, 5 * 60_000).unref();
+  const cartRateLimited = (ip: string) => {
+    const now = Date.now();
+    const cur = cartHits.get(ip);
+    if (!cur || now > cur.resetAt) { cartHits.set(ip, { count: 1, resetAt: now + 60_000 }); return false; }
+    cur.count += 1;
+    return cur.count > 20;
+  };
+  const isUuid = (s: string) => z.string().uuid().safeParse(s).success;
+  const contactSchema = z.object({
+    customerName: z.string().max(120).nullable().optional(),
+    customerPhone: z.string().min(8).max(20),
+    customerEmail: z.string().email().max(160).nullable().optional(),
+    couponCode: z.string().max(40).nullable().optional(),
+    consent: z.literal(true), // LGPD: sem consentimento, não grava
+  });
+
+  app.post("/api/cart/:sessionId/contact", async (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    if (cartRateLimited(ip)) return res.status(429).json({ message: "Muitas requisições" });
+    if (!isUuid(req.params.sessionId)) return res.status(400).json({ message: "Sessão inválida" });
+    const parsed = contactSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Dados inválidos" });
+    await storage.updateCartContact(req.params.sessionId, {
+      name: parsed.data.customerName ?? null,
+      phone: parsed.data.customerPhone,
+      email: parsed.data.customerEmail ?? null,
+      couponCode: parsed.data.couponCode ?? null,
+    });
+    return res.json({ ok: true });
+  });
+
+  // Revogação LGPD: o dono do carrinho apaga o próprio contato.
+  app.delete("/api/cart/:sessionId/contact", async (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    if (cartRateLimited(ip)) return res.status(429).json({ message: "Muitas requisições" });
+    if (!isUuid(req.params.sessionId)) return res.status(400).json({ message: "Sessão inválida" });
+    await storage.revokeCartContact(req.params.sessionId);
+    return res.json({ ok: true });
+  });
+
   // Coupon validation
   app.post("/api/store/coupon/validate", async (req, res) => {
     const { code, orderValue } = req.body;
@@ -390,6 +436,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     }
     } // fim do canal online
+
+    // Marca o carrinho como convertido (recuperação) — só se o telefone bater.
+    storage.markCartConverted(data.sessionId, order.id, String(data.customerPhone || "").replace(/\D/g, ""))
+      .catch((e) => console.error("[carts] markCartConverted falhou:", e?.message));
 
     // Clear cart
     await storage.clearCart(data.sessionId);
@@ -1315,6 +1365,69 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err: any) {
       return res.status(500).json({ message: err?.message || "Erro ao cancelar assinatura" });
     }
+  });
+
+  // ─ Carrinhos abandonados admin ────────────────────────────────────────────
+  const normalizePhoneBR = (raw: string): string | null => {
+    let d = (raw || "").replace(/\D/g, "");
+    if (d.startsWith("55") && d.length >= 12) d = d.slice(2);
+    if (d.length < 10 || d.length > 11) return null;
+    return "55" + d;
+  };
+  const DEFAULT_CART_MSG =
+    "Oi {nome}! 👋 Vi que você deixou alguns itens no carrinho:\n\n{itens}\n\nPosso te ajudar a finalizar? É só clicar aqui: {link}{cupom}";
+
+  app.get("/api/admin/carts/abandoned", requireAdmin, async (req, res) => {
+    const status = typeof req.query.status === "string" ? req.query.status : undefined;
+    const minAgeHours = req.query.minAgeHours ? Number(req.query.minAgeHours) : undefined;
+    const maxAgeDays = req.query.maxAgeDays ? Number(req.query.maxAgeDays) : 30;
+    return res.json(await storage.listAbandonedCarts({ status, minAgeHours, maxAgeDays }));
+  });
+
+  app.post("/api/admin/carts/:id/send-whatsapp", requireAdmin, async (req, res) => {
+    const id = Number(req.params.id);
+    const couponCode = typeof req.body?.couponCode === "string" && req.body.couponCode.trim()
+      ? req.body.couponCode.trim().toUpperCase() : null;
+    // Valida ANTES de registrar o contato.
+    const cart = await storage.getCartSessionById(id);
+    if (!cart) return res.status(404).json({ message: "Carrinho não encontrado" });
+    if (cart.recoveryStatus === "converted") return res.status(409).json({ message: "Carrinho já convertido" });
+    const phone = normalizePhoneBR(cart.customerPhone || "");
+    if (!phone) return res.status(400).json({ message: "Carrinho sem telefone válido" });
+
+    const updated = await storage.registerCartContact(id, couponCode);
+    if (!updated) return res.status(409).json({ message: "Carrinho já convertido ou inexistente" });
+
+    // Itens vêm do banco (cart_items + products) — nunca do cliente.
+    const enriched = (await storage.listAbandonedCarts({})).find((c: any) => c.id === id);
+    const items = enriched?.items ?? [];
+    const itensStr = items
+      .map((i: any) => `• ${i.quantity}x ${i.productTitle} — R$ ${(Number(i.unitPrice) * i.quantity).toFixed(2)}`)
+      .join("\n");
+
+    const settings = await storage.getStoreSettings();
+    const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get("host")}`;
+    const link = `${base}/loja/carrinho?recover=${encodeURIComponent(cart.sessionId)}` +
+      (couponCode ? `&cupom=${encodeURIComponent(couponCode)}` : "");
+    const cupomStr = couponCode ? `\n\n🎁 Use o cupom *${couponCode}* e ganhe um desconto!` : "";
+    const template = (settings as any)?.abandonedMessageTemplate?.trim() || DEFAULT_CART_MSG;
+    const message = template
+      .replace(/{nome}/g, (cart.customerName || "").split(" ")[0] || "tudo bem?")
+      .replace(/{itens}/g, itensStr)
+      .replace(/{link}/g, link)
+      .replace(/{cupom}/g, cupomStr);
+
+    const waLink = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+    return res.json({ waLink, contactCount: updated.contactCount });
+  });
+
+  app.patch("/api/admin/carts/:id", requireAdmin, async (req, res) => {
+    const status = typeof req.body?.status === "string" ? req.body.status : null;
+    if (!status || !["open", "contacted", "converted"].includes(status))
+      return res.status(400).json({ message: "Status inválido" });
+    const row = await storage.updateCartRecoveryStatus(Number(req.params.id), status);
+    if (!row) return res.status(404).json({ message: "Não encontrado ou já convertido" });
+    return res.json(row);
   });
 
   // ─ Financial Reports ─────────────────────────────────────────────────────────

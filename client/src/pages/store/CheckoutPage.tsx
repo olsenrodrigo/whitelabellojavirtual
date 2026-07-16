@@ -28,6 +28,7 @@ export default function CheckoutPage() {
 
   // Form state
   const [identity, setIdentity] = useState({ name: "", email: "", phone: "", cpf: "" });
+  const [recoverConsent, setRecoverConsent] = useState(false);
   const [address, setAddress] = useState<Address>({ recipient: "", cep: "", logradouro: "", numero: "", complemento: "", bairro: "", cidade: "", estado: "SP" });
   const [loadingCep, setLoadingCep] = useState(false);
   const [shipping, setShipping] = useState({ carrier: "Correios", service: "PAC", amount: 0 });
@@ -56,6 +57,28 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (!cart || cart.items.length === 0) navigate("/loja/carrinho");
   }, [cart]);
+
+  // Captura de carrinho abandonado (só com consentimento). Debounce ~2,5s. Os
+  // itens já estão no servidor (cart_sessions), então só enviamos o contato.
+  useEffect(() => {
+    if (!recoverConsent) return;
+    const phone = identity.phone.replace(/\D/g, "");
+    if (phone.length < 8 || !cart?.items?.length) return;
+    const h = window.setTimeout(() => {
+      fetch(`/api/cart/${sessionId}/contact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerName: identity.name || null,
+          customerPhone: identity.phone,
+          customerEmail: identity.email || null,
+          couponCode: couponCode || null,
+          consent: true,
+        }),
+      }).catch(() => {});
+    }, 2500);
+    return () => window.clearTimeout(h);
+  }, [recoverConsent, identity.name, identity.phone, identity.email, couponCode, cart, sessionId]);
 
   // Analytics: begin_checkout (1x, quando há itens e o analytics está pronto)
   const analyticsOn = useAnalyticsReady();
@@ -284,6 +307,20 @@ export default function CheckoutPage() {
                         <Input value={identity.cpf} onChange={e => setIdentity(i => ({...i, cpf: e.target.value}))} placeholder="000.000.000-00" className="mt-1" />
                       </div>
                     </div>
+                    <label className="flex items-start gap-2.5 text-sm text-gray-500 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={recoverConsent}
+                        onChange={e => {
+                          const checked = e.target.checked;
+                          setRecoverConsent(checked);
+                          // Revogação LGPD: ao desmarcar, apaga o contato já capturado.
+                          if (!checked) fetch(`/api/cart/${sessionId}/contact`, { method: "DELETE" }).catch(() => {});
+                        }}
+                        className="mt-0.5 h-4 w-4"
+                      />
+                      <span>Aceito receber contato por WhatsApp sobre este pedido, caso eu não finalize agora.</span>
+                    </label>
                     <Button
                       className="w-full py-3 text-white"
                       style={{ background: primaryColor }}
