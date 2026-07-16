@@ -12,8 +12,15 @@ import { fromError } from "zod-validation-error";
 import { sendContactEmail } from "./email";
 import { hashPassword, comparePassword, signToken, requireAdmin, requireRole, checkRateLimit, recordFailedAttempt, resetAttempts, storeOtp, verifyOtp, signOtpToken, verifyOtpToken } from "./auth";
 import { createPayment, getPaymentStatus, generateOrderNumber } from "./payment";
+import { asaasGateway } from "./gateway/asaas";
+import { loadConfig as loadAsaasConfig, isValidWebhookToken, parseWebhookEvent } from "./asaas";
 import { sendOrderConfirmationEmail, sendShippingEmail } from "./notify";
 import { registerShippingRoutes, createLabelForOrder } from "./smartenvios-integration";
+
+/** Gateway de pagamento ativo (env PAYMENT_GATEWAY; default mercadopago). */
+function activePaymentGateway(): string {
+  return (process.env.PAYMENT_GATEWAY || "mercadopago").toLowerCase();
+}
 
 // ─── Multer config ───────────────────────────────────────────────────────────
 const uploadsDir = path.join(process.cwd(), "uploads");
@@ -284,13 +291,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.decrementStock(item.productId, item.quantity);
     }
 
-    // Process payment
+    // Process payment — gateway ativo por env PAYMENT_GATEWAY (default mercadopago).
     const settings = await storage.getStoreSettings();
-    const mpToken = settings?.mercadoPagoToken || process.env.MERCADO_PAGO_ACCESS_TOKEN;
+    const gatewayId = activePaymentGateway();
 
     let paymentResult: any = { success: true };
-    if (mpToken) {
-      paymentResult = await createPayment({
+    if (gatewayId === "asaas") {
+      paymentResult = await asaasGateway.createPayment({
         amount: total,
         orderId: order.id,
         orderNumber,
@@ -299,30 +306,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         customerCpf: data.customerCpf,
         method: data.paymentMethod as any,
         description: `Pedido ${orderNumber}`,
-        cardToken: data.cardToken,
+        customerPhone: data.customerPhone,
+        customerCep: data.shippingCep,
+        customerAddressNumber: data.shippingNumero,
         installments: data.cardInstallments,
-      }, mpToken);
-
-      if (paymentResult.success) {
-        await storage.createPaymentTransaction({
+      }, {});
+    } else {
+      const mpToken = settings?.mercadoPagoToken || process.env.MERCADO_PAGO_ACCESS_TOKEN;
+      if (mpToken) {
+        paymentResult = await createPayment({
+          amount: total,
           orderId: order.id,
-          gateway: "mercadopago",
-          gatewayTransactionId: paymentResult.transactionId,
-          method: data.paymentMethod,
-          status: paymentResult.status || "pending",
-          amount: String(total),
-          currency: "BRL",
-          pixQrCode: paymentResult.pixQrCode,
-          pixQrCodeBase64: paymentResult.pixQrCodeBase64,
-          pixExpiration: paymentResult.pixExpiration,
-          boletoUrl: paymentResult.boletoUrl,
-          boletoBarcode: paymentResult.boletoBarcode,
-        });
+          orderNumber,
+          customerEmail: data.customerEmail,
+          customerName: data.customerName,
+          customerCpf: data.customerCpf,
+          method: data.paymentMethod as any,
+          description: `Pedido ${orderNumber}`,
+          cardToken: data.cardToken,
+          installments: data.cardInstallments,
+        }, mpToken);
+      }
+    }
 
-        if (data.paymentMethod === "credit_card" && paymentResult.status === "approved") {
-          await storage.updateOrderStatus(order.id, "confirmed", "Pagamento aprovado automaticamente");
-          await storage.updateOrderPayment(order.id, "approved", paymentResult.transactionId);
-        }
+    if (!paymentResult.success) {
+      console.error(`[checkout] falha no pagamento (${gatewayId}):`, paymentResult.error);
+    }
+
+    if (paymentResult.success && paymentResult.transactionId) {
+      await storage.createPaymentTransaction({
+        orderId: order.id,
+        gateway: gatewayId,
+        gatewayTransactionId: paymentResult.transactionId,
+        method: data.paymentMethod,
+        status: paymentResult.status || "pending",
+        amount: String(total),
+        currency: "BRL",
+        pixQrCode: paymentResult.pixQrCode,
+        pixQrCodeBase64: paymentResult.pixQrCodeBase64,
+        pixExpiration: paymentResult.pixExpiration,
+        boletoUrl: paymentResult.boletoUrl,
+        boletoBarcode: paymentResult.boletoBarcode,
+      });
+
+      if (data.paymentMethod === "credit_card" && paymentResult.status === "approved") {
+        await storage.updateOrderStatus(order.id, "confirmed", "Pagamento aprovado automaticamente");
+        await storage.updateOrderPayment(order.id, "approved", paymentResult.transactionId);
       }
     }
 
@@ -390,6 +419,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     }
     return res.status(200).json({ received: true });
+  });
+
+  // Payment webhook (Asaas)
+  app.post("/api/webhooks/asaas", async (req, res) => {
+    const cfg = loadAsaasConfig(process.env);
+    const token = req.headers["asaas-access-token"];
+    if (!isValidWebhookToken(cfg, typeof token === "string" ? token : undefined)) {
+      return res.status(401).json({ error: "Token inválido" });
+    }
+    const event = parseWebhookEvent(req.body);
+    // Responde rápido: a fila do Asaas interrompe após falhas consecutivas.
+    res.status(200).json({ received: true });
+    const paymentId = event?.payment?.id;
+    if (!paymentId) return;
+    try {
+      const status = await asaasGateway.getPaymentStatus(paymentId, {});
+      const tx = await storage.updatePaymentStatus(paymentId, status);
+      if (tx && status === "approved") {
+        const order = await storage.getOrderById(tx.orderId);
+        if (order && order.paymentStatus !== "approved") {
+          await storage.updateOrderStatus(tx.orderId, "confirmed", "Pagamento confirmado via webhook (Asaas)");
+          await storage.updateOrderPayment(tx.orderId, "approved", paymentId);
+          if (process.env.SMARTENVIOS_AUTO_LABEL === "1" && !order.trackingCode) {
+            createLabelForOrder(tx.orderId).catch((e) =>
+              console.error("[smartenvios] falha ao gerar etiqueta no webhook (Asaas):", e?.message)
+            );
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error("[asaas webhook] erro ao processar:", e?.message);
+    }
   });
 
   // Order status (customer)

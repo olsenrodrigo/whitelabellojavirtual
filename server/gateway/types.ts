@@ -9,6 +9,11 @@ export interface PaymentRequest {
   description: string;
   cardToken?: string;
   installments?: number;
+  // Opcionais usados por alguns gateways (ex.: Asaas exige telefone/endereço do
+  // cliente). O provider que não precisa simplesmente ignora.
+  customerPhone?: string;
+  customerCep?: string;
+  customerAddressNumber?: string;
 }
 
 export interface PaymentResponse {

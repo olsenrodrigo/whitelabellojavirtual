@@ -18,36 +18,34 @@ Conector portável: copie a pasta `server/asaas/` para qualquer projeto Node do 
 | `index.ts` | Re-exports. |
 | `mcp.ts` | Servidor MCP stdio (13 ferramentas). |
 
-A **cola de domínio** (mapeamento de status, materialização de pedido de
-assinatura, auto-etiqueta, poller) fica em `server/asaas-integration.ts`, e as
-**rotas HTTP** em `server/routes/{payments,webhooks,admin-payments}.ts` — essas
-peças dependem do app e são reescritas ao portar.
+No checkout deste projeto o Asaas é um **provider de gateway**
+(`server/gateway/asaas.ts`) que reutiliza este conector. Ative-o definindo
+`PAYMENT_GATEWAY=asaas` no `.env` (default = `mercadopago`). O webhook fica em
+`POST /api/webhooks/asaas`. **Cartão** continua no MercadoPago (o front tokeniza
+no MP); via Asaas o checkout cobre **PIX e boleto**.
 
 ## Variáveis de ambiente
 
 ```
+PAYMENT_GATEWAY=asaas     # ativa o Asaas no checkout (default: mercadopago)
 ASAAS_API_KEY=            # vazio = MOCK. Sandbox começa com $aact_hmlg_
 ASAAS_ENV=sandbox         # sandbox | production
 ASAAS_MOCK=               # 1 força mock mesmo com chave
 ASAAS_USER_AGENT=LojaVirtual
 ASAAS_WEBHOOK_TOKEN=      # segredo do header asaas-access-token (gere forte)
 ASAAS_WEBHOOK_URL=        # URL pública do /api/webhooks/asaas
-ASAAS_AUTO_LABEL=0        # 1 = etiqueta SmartEnvios ao confirmar pagamento
-ASAAS_RECONCILE_MINUTES=5 # poller (0 desliga)
-ASAAS_MAX_INSTALLMENTS=12
 ```
 
 ## Fluxo de pagamento
 
-1. Cliente cria o pedido (checkout) → `POST /api/payments/checkout` com método + CPF.
-2. Backend garante o cliente Asaas (`ensureCustomer` dedup por CPF), cria a cobrança
-   e grava uma `payment_transactions`.
-3. **PIX/boleto**: front mostra QR/linha e faz *polling* de `GET /api/payments/status/:orderNumber`.
-   **Cartão**: autoriza na hora (já pode voltar `CONFIRMED`).
-4. Asaas notifica `POST /api/webhooks/asaas` (valida `asaas-access-token`, responde
-   200 rápido, dedup por `evt_id`). O **poller** cobre webhook perdido/fila interrompida.
-5. Na transição para pago: pedido vira `pago`, assinatura materializa novo pedido,
-   e (se `ASAAS_AUTO_LABEL=1`) gera etiqueta SmartEnvios.
+1. Cliente finaliza o pedido → `POST /api/checkout`. Com `PAYMENT_GATEWAY=asaas`,
+   o dispatch chama `asaasGateway.createPayment` (`server/gateway/asaas.ts`).
+2. O provider garante o cliente Asaas (`ensureCustomer` dedup por CPF), cria a
+   cobrança e devolve `pixQrCode`/`pixQrCodeBase64` (PIX) ou `boletoUrl`/`boletoBarcode`
+   (boleto); grava uma `payment_transactions` com `gateway: "asaas"`.
+3. Asaas notifica `POST /api/webhooks/asaas` (valida `asaas-access-token`, responde
+   200 rápido). Ao confirmar, o pedido vira `confirmed` e (se `SMARTENVIOS_AUTO_LABEL=1`)
+   gera a etiqueta SmartEnvios.
 
 ## Segurança
 
