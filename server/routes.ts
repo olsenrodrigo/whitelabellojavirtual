@@ -1060,11 +1060,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json(await storage.listCoupons());
   });
   app.post("/api/admin/coupons", requireAdmin, async (req, res) => {
-    const coupon = await storage.createCoupon({
-      ...req.body,
-      code: String(req.body.code).toUpperCase(),
-    });
-    return res.status(201).json(coupon);
+    try {
+      const coupon = await storage.createCoupon({
+        ...req.body,
+        code: String(req.body.code).toUpperCase(),
+      });
+      return res.status(201).json(coupon);
+    } catch (err: any) {
+      if (err?.code === "23505") return res.status(409).json({ message: "Já existe um cupom com este código" });
+      throw err;
+    }
+  });
+  app.put("/api/admin/coupons/:id", requireAdmin, async (req, res) => {
+    try {
+      const { usedCount, ...rest } = req.body || {};
+      const coupon = await storage.updateCoupon(Number(req.params.id), rest);
+      if (!coupon) return res.status(404).json({ message: "Cupom não encontrado" });
+      return res.json(coupon);
+    } catch (err: any) {
+      if (err?.code === "23505") return res.status(409).json({ message: "Já existe um cupom com este código" });
+      throw err;
+    }
+  });
+  app.delete("/api/admin/coupons/:id", requireAdmin, async (req, res) => {
+    await storage.deleteCoupon(Number(req.params.id));
+    return res.status(204).send();
   });
 
   // ─ Financial Reports ─────────────────────────────────────────────────────────

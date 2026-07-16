@@ -1,19 +1,24 @@
 import { useState, useEffect } from "react";
-import { Plus, Tag } from "lucide-react";
+import { Check, Link2, Pencil, Plus, Tag, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { adminFetch } from "@/context/AdminAuthContext";
 import { useToast } from "@/hooks/use-toast";
 
+const EMPTY_FORM = {
+  code: "", type: "percentage", value: "", minOrderValue: "", maxUses: "", perCustomerLimit: "1",
+  startsAt: "", expiresAt: "", active: true,
+};
+
 export default function AdminCoupons() {
   const [coupons, setCoupons] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({
-    code: "", type: "percentage", value: "", minOrderValue: "", maxUses: "", perCustomerLimit: "1",
-    startsAt: "", expiresAt: "", active: true,
-  });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [confirmingId, setConfirmingId] = useState<number | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [form, setForm] = useState({ ...EMPTY_FORM });
   const { toast } = useToast();
 
   const load = async () => {
@@ -25,24 +30,55 @@ export default function AdminCoupons() {
 
   useEffect(() => { load(); }, []);
 
-  const handleCreate = async () => {
+  const openNew = () => { setForm({ ...EMPTY_FORM }); setEditingId(null); setShowForm(true); };
+  const openEdit = (c: any) => {
+    setForm({
+      code: c.code,
+      type: c.type,
+      value: String(c.value),
+      minOrderValue: c.minOrderValue != null ? String(c.minOrderValue) : "",
+      maxUses: c.maxUses != null ? String(c.maxUses) : "",
+      perCustomerLimit: String(c.perCustomerLimit ?? 1),
+      startsAt: c.startsAt ? String(c.startsAt).slice(0, 16) : "",
+      expiresAt: c.expiresAt ? String(c.expiresAt).slice(0, 16) : "",
+      active: c.active,
+    });
+    setEditingId(c.id);
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
     if (!form.code || !form.value) { toast({ title: "Código e valor são obrigatórios", variant: "destructive" }); return; }
-    const r = await adminFetch("/api/admin/coupons", {
-      method: "POST",
-      body: JSON.stringify({
-        ...form, value: String(form.value),
-        maxUses: form.maxUses ? Number(form.maxUses) : null,
-        minOrderValue: form.minOrderValue || null,
-        startsAt: form.startsAt || null,
-        expiresAt: form.expiresAt || null,
-      }),
+    const payload = {
+      ...form, value: String(form.value),
+      maxUses: form.maxUses ? Number(form.maxUses) : null,
+      minOrderValue: form.minOrderValue || null,
+      startsAt: form.startsAt || null,
+      expiresAt: form.expiresAt || null,
+    };
+    const r = await adminFetch(editingId ? `/api/admin/coupons/${editingId}` : "/api/admin/coupons", {
+      method: editingId ? "PUT" : "POST",
+      body: JSON.stringify(payload),
     });
     if (r.ok) {
-      toast({ title: "Cupom criado!" });
-      setShowForm(false);
-      setForm({ code: "", type: "percentage", value: "", minOrderValue: "", maxUses: "", perCustomerLimit: "1", startsAt: "", expiresAt: "", active: true });
-      load();
+      toast({ title: editingId ? "Cupom atualizado!" : "Cupom criado!" });
+      setShowForm(false); setEditingId(null); setForm({ ...EMPTY_FORM }); load();
+    } else {
+      const d = await r.json().catch(() => ({}));
+      toast({ title: d.message || "Falha ao salvar", variant: "destructive" });
     }
+  };
+
+  const handleDelete = async (id: number) => {
+    setConfirmingId(null);
+    const r = await adminFetch(`/api/admin/coupons/${id}`, { method: "DELETE" });
+    if (r.ok) { toast({ title: "Cupom excluído" }); load(); }
+  };
+
+  const copyLink = (code: string) => {
+    navigator.clipboard.writeText(`${window.location.origin}/loja?cupom=${encodeURIComponent(code)}`);
+    setCopied(code);
+    setTimeout(() => setCopied(null), 1500);
   };
 
   const TYPE_LABELS: Record<string, string> = { percentage: "% desconto", fixed: "R$ desconto", free_shipping: "Frete grátis" };
@@ -54,14 +90,14 @@ export default function AdminCoupons() {
           <h1 className="text-2xl font-bold text-gray-900">Cupons de Desconto</h1>
           <p className="text-gray-500 text-sm mt-0.5">{coupons.length} cupom(ns)</p>
         </div>
-        <Button onClick={() => setShowForm(!showForm)} className="gap-2 bg-gray-900 text-white hover:bg-gray-800">
+        <Button onClick={openNew} className="gap-2 bg-gray-900 text-white hover:bg-gray-800">
           <Plus size={16} /> Novo cupom
         </Button>
       </div>
 
       {showForm && (
         <div className="bg-white rounded-xl shadow-sm p-5 mb-5">
-          <h3 className="font-semibold text-gray-800 mb-4">Criar cupom</h3>
+          <h3 className="font-semibold text-gray-800 mb-4">{editingId ? "Editar cupom" : "Criar cupom"}</h3>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <div>
               <Label>Código *</Label>
@@ -103,8 +139,8 @@ export default function AdminCoupons() {
             </div>
           </div>
           <div className="flex gap-2 mt-4">
-            <Button variant="outline" onClick={() => setShowForm(false)}>Cancelar</Button>
-            <Button onClick={handleCreate} className="bg-gray-900 text-white hover:bg-gray-800">Criar cupom</Button>
+            <Button variant="outline" onClick={() => { setShowForm(false); setEditingId(null); }}>Cancelar</Button>
+            <Button onClick={handleSave} className="bg-gray-900 text-white hover:bg-gray-800">{editingId ? "Salvar" : "Criar cupom"}</Button>
           </div>
         </div>
       )}
@@ -127,6 +163,7 @@ export default function AdminCoupons() {
                 <th className="px-4 py-3 text-center hidden sm:table-cell">Usos</th>
                 <th className="px-4 py-3 text-center">Status</th>
                 <th className="px-4 py-3 text-right hidden lg:table-cell">Expira</th>
+                <th className="px-4 py-3 text-right">Ações</th>
               </tr>
             </thead>
             <tbody>
@@ -151,6 +188,23 @@ export default function AdminCoupons() {
                     </td>
                     <td className="px-4 py-3 text-right text-xs text-gray-400 hidden lg:table-cell">
                       {c.expiresAt ? new Date(c.expiresAt).toLocaleDateString("pt-BR") : "Sem prazo"}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {confirmingId === c.id ? (
+                        <div className="flex items-center justify-end gap-1.5">
+                          <span className="text-xs text-red-600">Excluir?</span>
+                          <button onClick={() => handleDelete(c.id)} className="p-1.5 rounded-md bg-red-600 text-white hover:bg-red-700" aria-label="Confirmar"><Check size={14} /></button>
+                          <button onClick={() => setConfirmingId(null)} className="p-1.5 rounded-md border text-gray-500 hover:bg-gray-50" aria-label="Cancelar"><X size={14} /></button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button onClick={() => copyLink(c.code)} title="Copiar link" className="p-1.5 rounded-md border text-gray-500 hover:bg-gray-50">
+                            {copied === c.code ? <Check size={14} className="text-green-600" /> : <Link2 size={14} />}
+                          </button>
+                          <button onClick={() => openEdit(c)} title="Editar" className="p-1.5 rounded-md border text-gray-500 hover:bg-gray-50"><Pencil size={14} /></button>
+                          <button onClick={() => setConfirmingId(c.id)} title="Excluir" className="p-1.5 rounded-md border text-red-500 hover:bg-red-50"><Trash2 size={14} /></button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );

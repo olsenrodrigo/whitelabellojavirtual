@@ -392,6 +392,16 @@ export class DatabaseStorage {
       .returning();
     return rows[0] ?? null;
   }
+  async updateCoupon(id: number, data: Partial<InsertCoupon>): Promise<Coupon | undefined> {
+    const patch: any = { ...data };
+    delete patch.usedCount; // nunca pelo admin
+    if (patch.code) patch.code = String(patch.code).toUpperCase();
+    const [result] = await db.update(coupons).set(patch).where(eq(coupons.id, id)).returning();
+    return result;
+  }
+  async deleteCoupon(id: number): Promise<void> {
+    await db.delete(coupons).where(eq(coupons.id, id));
+  }
 
   // ─── Shipping ─────────────────────────────────────────────────────────────
   async listShippingZones(): Promise<any[]> {
