@@ -14,6 +14,7 @@ import { hashPassword, comparePassword, signToken, requireAdmin, requireRole, ch
 import { createPayment, getPaymentStatus, generateOrderNumber } from "./payment";
 import { asaasGateway } from "./gateway/asaas";
 import { loadConfig as loadAsaasConfig, isValidWebhookToken, parseWebhookEvent } from "./asaas";
+import { loadConfig as loadMpConfig, validateWebhookSignature as validateMpWebhook } from "./mercadopago";
 import { sendOrderConfirmationEmail, sendShippingEmail } from "./notify";
 import { registerShippingRoutes, createLabelForOrder } from "./smartenvios-integration";
 
@@ -396,6 +397,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Payment webhook (MercadoPago)
   app.post("/api/webhooks/mercadopago", async (req, res) => {
+    // Valida a assinatura x-signature quando o segredo estiver configurado
+    // (retrocompatível: sem MP_WEBHOOK_SECRET, mantém o comportamento anterior).
+    const mpCfg = loadMpConfig(process.env);
+    if (mpCfg.webhookSecret) {
+      const dataId = (req.query["data.id"] as string) || req.body?.data?.id;
+      const validSig = validateMpWebhook(mpCfg, {
+        xSignature: req.headers["x-signature"] as string | undefined,
+        xRequestId: req.headers["x-request-id"] as string | undefined,
+        dataId,
+      });
+      if (!validSig) return res.status(401).json({ error: "Assinatura inválida" });
+    }
     const { action, data: wData } = req.body;
     if (action === "payment.updated" && wData?.id) {
       const settings = await storage.getStoreSettings();
