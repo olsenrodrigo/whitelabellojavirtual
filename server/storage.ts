@@ -1,8 +1,9 @@
 import {
   contactMessages, adminUsers, categories, products, productImages,
   variants, customers, addresses, cartSessions, cartItems, orders,
-  orderItems, orderStatusHistory, paymentTransactions, coupons,
+  orderItems, orderStatusHistory, paymentTransactions, coupons, subscriptions,
   shippingZones, shippingRates, storeSettings,
+  type Subscription, type InsertSubscription,
   type ContactMessage, type InsertContactMessage,
   type AdminUser, type InsertAdminUser,
   type Category, type InsertCategory,
@@ -401,6 +402,102 @@ export class DatabaseStorage {
   }
   async deleteCoupon(id: number): Promise<void> {
     await db.delete(coupons).where(eq(coupons.id, id));
+  }
+
+  // ─── Assinaturas ──────────────────────────────────────────────────────────
+  async createSubscriptionRow(data: InsertSubscription): Promise<Subscription> {
+    const [result] = await db.insert(subscriptions).values(data).returning();
+    return result;
+  }
+  async getSubscriptionByGatewayId(gatewaySubscriptionId: string): Promise<Subscription | undefined> {
+    const [result] = await db.select().from(subscriptions)
+      .where(eq(subscriptions.gatewaySubscriptionId, gatewaySubscriptionId));
+    return result;
+  }
+  async updateSubscriptionRow(id: number, data: Partial<InsertSubscription>): Promise<Subscription | undefined> {
+    const [result] = await db.update(subscriptions)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(subscriptions.id, id)).returning();
+    return result;
+  }
+  async listSubscriptionsAdmin(): Promise<Subscription[]> {
+    return db.select().from(subscriptions).orderBy(desc(subscriptions.createdAt));
+  }
+
+  /**
+   * Materializa um pedido a partir de uma assinatura para o ciclo cobrado.
+   * IDEMPOTENTE: o número do pedido é derivado do id do pagamento do ciclo
+   * (`SUB-<paymentId>`), e o índice único de order_number faz o onConflictDoNothing
+   * garantir exatamente-um-pedido mesmo com entregas duplicadas do webhook.
+   * Pedido + itens + histórico são gravados numa única transação (atomicidade).
+   * Retorna { order, created }: created=false quando o ciclo já fora materializado.
+   */
+  async materializeSubscriptionOrder(
+    sub: Subscription,
+    paymentId: string,
+    paymentMethod: string
+  ): Promise<{ order: Order | null; created: boolean }> {
+    const items = (sub.itemsSnapshot as any[]) ?? [];
+    const subtotal = items.reduce((s, it) => s + Number(it.totalPrice), 0);
+    const orderNumber = `SUB-${paymentId}`;
+    return db.transaction(async (trx) => {
+      const [order] = await trx.insert(orders).values({
+        orderNumber,
+        customerName: sub.customerName,
+        customerEmail: sub.customerEmail ?? "",
+        customerPhone: sub.customerPhone,
+        customerCpf: sub.customerCpf,
+        shippingRecipient: sub.shippingRecipient,
+        shippingCep: sub.shippingCep,
+        shippingLogradouro: sub.shippingLogradouro,
+        shippingNumero: sub.shippingNumero,
+        shippingComplemento: sub.shippingComplemento,
+        shippingBairro: sub.shippingBairro,
+        shippingCidade: sub.shippingCidade,
+        shippingEstado: sub.shippingEstado,
+        subtotal: subtotal.toFixed(2),
+        discountAmount: "0",
+        shippingAmount: sub.shippingAmount,
+        total: sub.value,
+        status: "confirmed",
+        paymentMethod,
+        paymentStatus: "approved",
+        paymentTransactionId: paymentId,
+        shippingService: sub.shippingService,
+        notes: `Assinatura ${sub.gatewaySubscriptionId} — ciclo ${sub.cycle}`,
+        subscriptionId: sub.id,
+      }).onConflictDoNothing({ target: orders.orderNumber }).returning();
+
+      if (!order) return { order: null, created: false }; // ciclo já materializado
+
+      if (items.length) {
+        await trx.insert(orderItems).values(items.map((it) => ({
+          orderId: order.id,
+          productId: it.productId ?? null,
+          variantId: it.variantId ?? null,
+          productTitle: it.productTitle,
+          variantTitle: it.variantTitle ?? null,
+          sku: it.sku ?? null,
+          quantity: it.quantity,
+          unitPrice: String(it.unitPrice),
+          totalPrice: String(it.totalPrice),
+          imageUrl: it.imageUrl ?? null,
+        })));
+        // Baixa de estoque na MESMA transação (paridade com o checkout avulso).
+        for (const it of items) {
+          if (it.productId) {
+            await trx.update(products)
+              .set({ stockQuantity: sql`${products.stockQuantity} - ${it.quantity}` })
+              .where(eq(products.id, it.productId));
+          }
+        }
+      }
+      await trx.insert(orderStatusHistory).values({
+        orderId: order.id, fromStatus: null, toStatus: "confirmed",
+        note: `Pedido gerado pela assinatura ${sub.gatewaySubscriptionId}`, createdBy: "system",
+      });
+      return { order, created: true };
+    });
   }
 
   // ─── Shipping ─────────────────────────────────────────────────────────────

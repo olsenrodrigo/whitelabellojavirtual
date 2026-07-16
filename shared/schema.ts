@@ -291,6 +291,8 @@ export const orders = pgTable("orders", {
   // Observações
   notes: text("notes"),
   internalNotes: text("internal_notes"),
+  // Assinatura que materializou este pedido (null = pedido avulso)
+  subscriptionId: integer("subscription_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -364,6 +366,41 @@ export const coupons = pgTable("coupons", {
 export const insertCouponSchema = createInsertSchema(coupons).omit({ id: true, createdAt: true, usedCount: true });
 export type InsertCoupon = z.infer<typeof insertCouponSchema>;
 export type Coupon = typeof coupons.$inferSelect;
+
+// ─── Assinaturas ("assine e receba") ──────────────────────────────────────────
+// Espelho local da assinatura recorrente do Asaas, com snapshot dos itens e do
+// endereço para materializar um pedido a cada ciclo cobrado (via webhook).
+export const subscriptions = pgTable("subscriptions", {
+  id: serial("id").primaryKey(),
+  gatewaySubscriptionId: text("gateway_subscription_id").notNull().unique(), // sub_xxx
+  gatewayCustomerId: text("gateway_customer_id").notNull(),                   // cus_xxx
+  customerName: text("customer_name").notNull(),
+  customerEmail: text("customer_email"),
+  customerPhone: text("customer_phone").notNull(),
+  customerCpf: text("customer_cpf"),
+  shippingRecipient: text("shipping_recipient"),
+  shippingCep: text("shipping_cep").notNull(),
+  shippingLogradouro: text("shipping_logradouro").notNull(),
+  shippingNumero: text("shipping_numero").notNull(),
+  shippingComplemento: text("shipping_complemento"),
+  shippingBairro: text("shipping_bairro").notNull(),
+  shippingCidade: text("shipping_cidade").notNull(),
+  shippingEstado: text("shipping_estado").notNull(),
+  billingType: text("billing_type").notNull(), // PIX | BOLETO | CREDIT_CARD
+  cycle: text("cycle").notNull().default("MONTHLY"),
+  value: decimal("value", { precision: 10, scale: 2 }).notNull(),
+  shippingAmount: decimal("shipping_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+  shippingService: text("shipping_service"),
+  status: text("status").notNull().default("ACTIVE"), // ACTIVE | INACTIVE | CANCELLED
+  itemsSnapshot: jsonb("items_snapshot").notNull(), // [{productId, variantId, productTitle, quantity, unitPrice, totalPrice, imageUrl}]
+  nextDueDate: text("next_due_date"), // YYYY-MM-DD
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertSubscriptionSchema = createInsertSchema(subscriptions).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertSubscription = z.infer<typeof insertSubscriptionSchema>;
+export type Subscription = typeof subscriptions.$inferSelect;
 
 // ─── Zonas e Taxas de Envio ───────────────────────────────────────────────────
 export const shippingZones = pgTable("shipping_zones", {

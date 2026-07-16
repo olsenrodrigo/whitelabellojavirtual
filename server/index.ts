@@ -66,7 +66,10 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
+      // Não logar o corpo de rotas com artefatos de pagamento (QR PIX,
+      // copia-e-cola, invoice URL, dados de cobrança).
+      const sensitive = path === "/api/subscribe" || path === "/api/checkout";
+      if (capturedJsonResponse && !sensitive) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
 

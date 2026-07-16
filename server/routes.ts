@@ -8,12 +8,16 @@ import { v4 as uuidv4 } from "uuid";
 import * as XLSX from "xlsx";
 import { storage } from "./storage";
 import { insertContactMessageSchema, checkoutSchema } from "@shared/schema";
+import { z } from "zod";
 import { fromError } from "zod-validation-error";
 import { sendContactEmail } from "./email";
 import { hashPassword, comparePassword, signToken, requireAdmin, requireRole, checkRateLimit, recordFailedAttempt, resetAttempts, storeOtp, verifyOtp, signOtpToken, verifyOtpToken } from "./auth";
 import { createPayment, getPaymentStatus, generateOrderNumber } from "./payment";
 import { asaasGateway } from "./gateway/asaas";
-import { loadConfig as loadAsaasConfig, isValidWebhookToken, parseWebhookEvent } from "./asaas";
+import {
+  loadConfig as loadAsaasConfig, isValidWebhookToken, parseWebhookEvent,
+  ensureCustomer, createSubscription, cancelSubscription, listSubscriptionPayments, getPixQrCode,
+} from "./asaas";
 import { loadConfig as loadMpConfig, validateWebhookSignature as validateMpWebhook } from "./mercadopago";
 import { sendOrderConfirmationEmail, sendShippingEmail } from "./notify";
 import { registerShippingRoutes, createLabelForOrder } from "./smartenvios-integration";
@@ -428,6 +432,172 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
+  // ─── Assinaturas ("assine e receba") ───────────────────────────────────────
+  // Cria uma assinatura recorrente no Asaas. Os pedidos de cada ciclo são
+  // materializados automaticamente pelo webhook quando o pagamento é confirmado.
+  const subscribeSchema = z.object({
+    customerName: z.string().min(3),
+    customerEmail: z.string().email(), // obrigatório: recibos e integrações de envio
+    customerPhone: z.string().min(8),
+    customerCpf: z.string().min(11).max(18),
+    shippingRecipient: z.string().optional(),
+    shippingCep: z.string().min(8),
+    shippingLogradouro: z.string().min(1),
+    shippingNumero: z.string().min(1),
+    shippingComplemento: z.string().nullable().optional(),
+    shippingBairro: z.string().min(1),
+    shippingCidade: z.string().min(1),
+    shippingEstado: z.string().length(2),
+    billingType: z.enum(["PIX", "BOLETO", "CREDIT_CARD"]),
+    cycle: z.enum(["WEEKLY", "BIWEEKLY", "MONTHLY", "BIMONTHLY", "QUARTERLY", "SEMIANNUALLY", "YEARLY"]).default("MONTHLY"),
+    shippingAmount: z.union([z.string(), z.number()]).optional(),
+    shippingService: z.string().nullable().optional(),
+    // Assinatura é por produto simples (sem variante), igual ao PuraFlora.
+    items: z.array(z.object({
+      productId: z.number().int().positive(),
+      quantity: z.number().int().positive().max(99),
+    })).min(1),
+    creditCard: z.object({
+      holderName: z.string(), number: z.string(),
+      expiryMonth: z.string(), expiryYear: z.string(), ccv: z.string(),
+    }).optional(),
+    creditCardHolderInfo: z.any().optional(),
+  });
+
+  app.post("/api/subscribe", async (req, res) => {
+    const parsed = subscribeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: fromError(parsed.error).toString() });
+    }
+    const input = parsed.data;
+    const cfg = loadAsaasConfig(process.env);
+    try {
+      // Recalcula itens/valor a partir do catálogo (fonte de verdade)
+      const items = [];
+      for (const it of input.items) {
+        const p = await storage.getProductById(it.productId);
+        if (!p || p.status !== "active" || !p.published) {
+          return res.status(400).json({ message: `Produto indisponível: ${it.productId}` });
+        }
+        const unit = Number(p.price);
+        items.push({
+          productId: p.id,
+          variantId: null,
+          productTitle: p.title,
+          sku: p.sku ?? null,
+          quantity: it.quantity,
+          unitPrice: unit.toFixed(2),
+          totalPrice: (Math.round(unit * it.quantity * 100) / 100).toFixed(2),
+          imageUrl: null,
+        });
+      }
+      const subtotal = items.reduce((s, it) => s + Number(it.totalPrice), 0);
+      const shippingAmount = Math.max(0, Number(input.shippingAmount ?? 0) || 0);
+      const total = Math.round((subtotal + shippingAmount) * 100) / 100;
+
+      const customer = await ensureCustomer(cfg, {
+        name: input.customerName,
+        cpfCnpj: input.customerCpf,
+        email: input.customerEmail ?? undefined,
+        mobilePhone: input.customerPhone,
+        postalCode: input.shippingCep,
+        address: input.shippingLogradouro,
+        addressNumber: input.shippingNumero,
+        province: input.shippingBairro,
+        externalReference: input.customerPhone.replace(/\D/g, ""),
+      });
+
+      const isCard = input.billingType === "CREDIT_CARD";
+      if (isCard && !input.creditCard) {
+        return res.status(400).json({ message: "Dados do cartão são obrigatórios para assinatura no cartão" });
+      }
+
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const subscription = await createSubscription(cfg, {
+        customer: customer.id,
+        billingType: input.billingType,
+        value: total,
+        nextDueDate: todayIso,
+        cycle: input.cycle,
+        description: `Assinatura — ${items.map((i) => `${i.quantity}x ${i.productTitle}`).join(", ").slice(0, 400)}`,
+        ...(isCard
+          ? { creditCard: input.creditCard, creditCardHolderInfo: input.creditCardHolderInfo, remoteIp: req.ip || req.socket.remoteAddress || undefined }
+          : {}),
+      });
+
+      // Snapshot local. Se falhar após a assinatura já existir no Asaas, cancela
+      // compensatoriamente para não deixar cobrança recorrente órfã (sem registro
+      // local, o webhook ignoraria os ciclos).
+      let subRow;
+      try {
+        subRow = await storage.createSubscriptionRow({
+          gatewaySubscriptionId: subscription.id,
+          gatewayCustomerId: customer.id,
+          customerName: input.customerName,
+          customerEmail: input.customerEmail,
+          customerPhone: input.customerPhone,
+          customerCpf: input.customerCpf.replace(/\D/g, ""),
+          shippingRecipient: input.shippingRecipient ?? input.customerName,
+          shippingCep: input.shippingCep,
+          shippingLogradouro: input.shippingLogradouro,
+          shippingNumero: input.shippingNumero,
+          shippingComplemento: input.shippingComplemento ?? null,
+          shippingBairro: input.shippingBairro,
+          shippingCidade: input.shippingCidade,
+          shippingEstado: input.shippingEstado,
+          billingType: input.billingType,
+          cycle: input.cycle,
+          value: total.toFixed(2),
+          shippingAmount: shippingAmount.toFixed(2),
+          shippingService: input.shippingService ?? null,
+          status: "ACTIVE",
+          itemsSnapshot: items,
+          nextDueDate: subscription.nextDueDate,
+        });
+      } catch (dbErr: any) {
+        try {
+          await cancelSubscription(cfg, subscription.id);
+          console.error(`[asaas] assinatura ${subscription.id} cancelada (compensação: snapshot local falhou):`, dbErr?.message);
+        } catch (cancelErr: any) {
+          console.error(`[asaas] ATENÇÃO: assinatura ${subscription.id} órfã — snapshot local E cancelamento falharam:`, cancelErr?.message);
+        }
+        throw dbErr;
+      }
+
+      const response: Record<string, unknown> = {
+        mock: cfg.mock,
+        subscriptionId: subscription.id,
+        localSubscriptionId: subRow.id,
+        status: subscription.status,
+      };
+
+      // Primeira cobrança do ciclo (PIX/boleto). Falha aqui NÃO invalida a
+      // assinatura já criada+persistida — o cliente consegue a cobrança depois
+      // (a materialização acontece pelo webhook). Não relançamos.
+      try {
+        const firstPayments = await listSubscriptionPayments(cfg, subscription.id);
+        const first = firstPayments[0];
+        if (first) {
+          response.firstPaymentId = first.id;
+          response.invoiceUrl = first.invoiceUrl;
+          if (input.billingType === "PIX") {
+            const qr = await getPixQrCode(cfg, first.id);
+            response.pix = { encodedImage: qr.encodedImage, payload: qr.payload };
+          } else if (input.billingType === "BOLETO") {
+            response.boleto = { bankSlipUrl: first.bankSlipUrl };
+          }
+        }
+      } catch (payErr: any) {
+        console.error(`[asaas] assinatura ${subscription.id} criada, mas falhou ao obter 1ª cobrança:`, payErr?.message);
+      }
+
+      return res.json(response);
+    } catch (err: any) {
+      const status = err?.status >= 400 && err.status < 500 ? 400 : 500;
+      return res.status(status).json({ message: err?.message || "Erro ao criar assinatura" });
+    }
+  });
+
   // Rotas de frete/etiqueta (SmartEnvios)
   registerShippingRoutes(app);
 
@@ -494,6 +664,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             createLabelForOrder(tx.orderId).catch((e) =>
               console.error("[smartenvios] falha ao gerar etiqueta no webhook (Asaas):", e?.message)
             );
+          }
+        }
+      }
+
+      // Cobrança de ASSINATURA: cada ciclo pago materializa um novo pedido.
+      // Não há tx prévia (a cobrança recorrente nasce no Asaas), então tratamos
+      // à parte, de forma idempotente (SUB-<paymentId> + índice único).
+      const subId = event?.payment?.subscription;
+      if (subId && status === "approved") {
+        const sub = await storage.getSubscriptionByGatewayId(subId);
+        if (sub && sub.status !== "CANCELLED") {
+          const bt = event?.payment?.billingType;
+          const method = bt === "BOLETO" ? "boleto" : bt === "CREDIT_CARD" ? "credit_card" : "pix";
+          const { order: subOrder, created } = await storage.materializeSubscriptionOrder(sub, paymentId, method);
+          if (created && subOrder) {
+            console.log(`[asaas] assinatura ${subId}: pedido ${subOrder.orderNumber} materializado`);
+            if (process.env.SMARTENVIOS_AUTO_LABEL === "1") {
+              createLabelForOrder(subOrder.id).catch((e) =>
+                console.error("[smartenvios] falha ao gerar etiqueta de assinatura:", e?.message)
+              );
+            }
           }
         }
       }
@@ -1090,6 +1281,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/admin/coupons/:id", requireAdmin, async (req, res) => {
     await storage.deleteCoupon(Number(req.params.id));
     return res.status(204).send();
+  });
+
+  // ─ Assinaturas admin ──────────────────────────────────────────────────────
+  app.get("/api/admin/subscriptions", requireAdmin, async (_req, res) => {
+    return res.json(await storage.listSubscriptionsAdmin());
+  });
+  app.post("/api/admin/subscriptions/:id/cancel", requireAdmin, async (req, res) => {
+    try {
+      const subs = await storage.listSubscriptionsAdmin();
+      const sub = subs.find((s) => s.id === Number(req.params.id));
+      if (!sub) return res.status(404).json({ message: "Assinatura não encontrada" });
+      const cfg = loadAsaasConfig(process.env);
+      await cancelSubscription(cfg, sub.gatewaySubscriptionId);
+      const updated = await storage.updateSubscriptionRow(sub.id, { status: "CANCELLED" });
+      return res.json(updated);
+    } catch (err: any) {
+      return res.status(500).json({ message: err?.message || "Erro ao cancelar assinatura" });
+    }
   });
 
   // ─ Financial Reports ─────────────────────────────────────────────────────────

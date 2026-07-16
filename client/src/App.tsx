@@ -22,6 +22,7 @@ import AdminCustomers from "@/pages/admin/Customers";
 import AdminImport from "@/pages/admin/Import";
 import AdminSettings from "@/pages/admin/Settings";
 import AdminCoupons from "@/pages/admin/Coupons";
+import AdminSubscriptions from "@/pages/admin/Subscriptions";
 import AdminCategories from "@/pages/admin/Categories";
 import AdminFeaturedProducts from "@/pages/admin/FeaturedProducts";
 import AdminUsers from "@/pages/admin/Users";
@@ -59,6 +60,7 @@ function Router() {
       <Route path="/admin/clientes" component={() => <AdminLayout><AdminCustomers /></AdminLayout>} />
       <Route path="/admin/importar" component={() => <AdminLayout><AdminImport /></AdminLayout>} />
       <Route path="/admin/cupons" component={() => <AdminLayout><AdminCoupons /></AdminLayout>} />
+      <Route path="/admin/assinaturas" component={() => <AdminLayout><AdminSubscriptions /></AdminLayout>} />
       <Route path="/admin/categorias" component={() => <AdminLayout><AdminCategories /></AdminLayout>} />
       <Route path="/admin/destaques" component={() => <AdminLayout><AdminFeaturedProducts /></AdminLayout>} />
       <Route path="/admin/configuracoes" component={() => <AdminLayout><AdminSettings /></AdminLayout>} />
